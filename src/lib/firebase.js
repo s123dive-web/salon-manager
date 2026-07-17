@@ -1,38 +1,41 @@
 // Firebase init for Salon Manager — Auth (email/password) + Realtime Database + Storage.
 //
-// ⚠ PLACEHOLDER CONFIG — THE APP CANNOT SIGN IN OR SYNC UNTIL YOU FILL THIS IN. ⚠
+// These keys are client-side config and are SAFE TO BE PUBLIC — every web Firebase app
+// ships its config. They identify the project; they don't grant access. Access is enforced
+// by Firebase Auth plus the role-based rules in database.rules.json, which is why deploying
+// those rules is part of setup rather than an optional extra:
 //
-// Salon Manager needs its OWN Firebase project. Do not point it at another app's
-// project: this app stores everything under the same `shop/<slice>` paths that the
-// grocery-store-manager app uses, so sharing a project would have the two apps
-// overwrite each other's live data.
+//   firebase deploy --only database
 //
-// SETUP (once):
-//   1. Firebase console → Add project.
-//   2. Build → Authentication → Sign-in method → enable Email/Password.
-//   3. Build → Realtime Database → Create database (pick your region).
-//   4. Build → Storage → Get started (needed for vendor-bill proof uploads).
-//   5. Project settings → General → Your apps → Web app → copy the config object
-//      and paste its values over the PLACEHOLDER strings below.
-//   6. Deploy the security rules:  firebase deploy --only database,storage
-//      (see database.rules.json + storage.rules; first sign-in self-registers as owner).
+// Without them the database sits on whatever the console last had live — which for a
+// freshly-created project is locked mode, denying everyone including the owner.
 //
-// These keys are client-side config and are safe to be public — they identify the
-// project, they don't grant access. Access is enforced by Firebase Auth plus the
-// role-based security rules in database.rules.json / storage.rules.
+// The first account to sign in while shop/users is empty claims ownership; after that the
+// node locks down and only an owner can add staff (Settings → Users).
+//
+// To point this at a DIFFERENT project, replace the block below — and give it its own
+// project. This app stores everything under the same `shop/<slice>` paths that
+// grocery-store-manager uses, so sharing one project would have the two overwrite each
+// other's live data.
 import { initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
 import { getDatabase } from "firebase/database";
 import { getStorage } from "firebase/storage";
 
+// Project: salon-manager-49a88 (Realtime Database in asia-southeast1 / Singapore).
+// This is Salon Manager's OWN project — deliberately not the one grocery-store-manager uses,
+// since both apps store under the same shop/<slice> paths and would overwrite each other.
+//
+// measurementId is intentionally omitted: it only feeds Google Analytics, which this app
+// doesn't initialise.
 const firebaseConfig = {
-  apiKey: "PLACEHOLDER_API_KEY",
-  authDomain: "PLACEHOLDER.firebaseapp.com",
-  databaseURL: "https://PLACEHOLDER-default-rtdb.firebaseio.com",
-  projectId: "PLACEHOLDER",
-  storageBucket: "PLACEHOLDER.firebasestorage.app",
-  messagingSenderId: "PLACEHOLDER_SENDER_ID",
-  appId: "PLACEHOLDER_APP_ID",
+  apiKey: "AIzaSyD7WR82tq1WItd98fmhcYdiycwPac1cMuI",
+  authDomain: "salon-manager-49a88.firebaseapp.com",
+  databaseURL: "https://salon-manager-49a88-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "salon-manager-49a88",
+  storageBucket: "salon-manager-49a88.firebasestorage.app",
+  messagingSenderId: "380134454141",
+  appId: "1:380134454141:web:0a7061e369bcd5c86f1214",
 };
 
 // True once the config above has actually been filled in. The sign-in screen uses this
