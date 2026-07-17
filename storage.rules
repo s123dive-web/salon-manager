@@ -1,11 +1,24 @@
 rules_version = '2';
 
 // Firebase Storage holds vendor-bill proof files under shop/bills/<billId>/<file>
-// (see src/lib/bills.js). Access is locked to the single shop-owner account — these
-// rules are the only gate, since the Firebase config is public.
+// (see src/lib/bills.js). The Firebase config is public, so these rules are the gate.
+//
+// WHY THIS FILE STILL USES AN EMAIL, WHEN THE DATABASE USES ROLES
+// ----------------------------------------------------------------------------
+// Storage rules cannot read the Realtime Database. There is a `firestore.get()`
+// cross-service call, but no RTDB equivalent, so the shop/users/<uid>/role lookup
+// that database.rules.json performs is simply not expressible here. The honest
+// options are an email allowlist or custom auth claims (which need a backend /
+// Admin SDK — out of scope for this app).
+//
+// Vendor bills are owner-only anyway, so an email allowlist costs nothing in
+// practice: the set of people allowed to touch proofs is exactly {the owner}.
+// If you add a second owner, add their email to the list below too.
 //
 // SETUP (do this once):
 //   1. Replace OWNER_EMAIL below with the owner's sign-in email.
+//      For more than one owner, use:
+//        request.auth.token.email in ['a@x.com', 'b@x.com']
 //   2. Deploy:  firebase deploy --only storage
 service firebase.storage {
   match /b/{bucket}/o {

@@ -16,6 +16,12 @@ import {
 import { parseFile, parseRawText } from "./lib/parse.js";
 import { itemBarcodes, findItemByBarcode, findBarcodeClash, cleanBarcodeList, parseBarcodeText, withBarcodeSep, looksLikeBarcode } from "./lib/barcodes.js";
 import { exportJson, exportXlsx, importXlsx } from "./lib/backup.js";
+import { can, ROLE_LABELS, ROLE_DESCRIPTIONS, ROLES, resolveRole, isBootstrap, validateUserChange } from "./lib/roles.js";
+import {
+  PRODUCT_CATEGORIES, PRODUCT_CATEGORY_ICONS, STOCK_TYPES,
+  buildProducts, buildServices, buildStaff, buildTemplates,
+  SERVICE_CATEGORIES, serviceIconFor, DEFAULT_LOYALTY_CONFIG,
+} from "./lib/seed.js";
 import { uploadBillProof, deleteBillProof, PROOF_ACCEPT, MAX_PROOF_BYTES } from "./lib/bills.js";
 import {
   PAYMENT_METHODS, PAYMENT_STATUS, DAILY_CATEGORIES, itemsForCategory,
@@ -254,25 +260,16 @@ function UpiQrPreview({ store, amount }) {
   );
 }
 const UNITS = ["pc", "kg", "g", "L", "ml", "packet", "dozen", "box"];
-const CATEGORIES = [
-  "Cold Drinks & Water", "Ice Cream", "Chocolates & Candy", "Snacks & Biscuits",
-  "Dairy & Eggs", "Bakery & Bread", "Staples & Grains", "Dry Fruits & Nuts",
-  "Fruits & Vegetables", "Oil & Ghee", "Beverages", "Spices & Masala", "Frozen & Instant",
-  "Personal Care", "Household & Cleaning", "Stationery", "Sports & Toys", "Other",
-];
+// Product categories for salon RETAIL + BACKBAR stock. The salon's SERVICE menu is a separate
+// slice with its own categories (Hair/Skin/Nails/Spa/Makeup) — see src/lib/seed.js. These are
+// only for things that sit on a shelf and get counted.
+const CATEGORIES = PRODUCT_CATEGORIES;
 // A small emoji icon per category (used in place of product photos).
-const CATEGORY_ICONS = {
-  "Cold Drinks & Water": "🥤", "Ice Cream": "🍦", "Chocolates & Candy": "🍫",
-  "Snacks & Biscuits": "🍪", "Dairy & Eggs": "🥛", "Bakery & Bread": "🍞",
-  "Staples & Grains": "🌾", "Dry Fruits & Nuts": "🥜", "Fruits & Vegetables": "🥦",
-  "Oil & Ghee": "🛢️", "Beverages": "☕", "Spices & Masala": "🌶️", "Frozen & Instant": "🍜",
-  "Personal Care": "🧴", "Household & Cleaning": "🧹", "Stationery": "✏️",
-  "Sports & Toys": "🏏", "Other": "📦",
-};
+const CATEGORY_ICONS = PRODUCT_CATEGORY_ICONS;
 const iconFor = (category) => CATEGORY_ICONS[category] || "📦";
 
 // localStorage key for shop-owner-added categories (custom categories with no item yet).
-const CUSTOM_CATS_KEY = "psm-custom-cats-v1";
+const CUSTOM_CATS_KEY = "slm-custom-cats-v1";
 
 // The full category list shown in every dropdown = the built-in CATEGORIES, plus any category
 // already present on an item, plus custom categories the owner added. De-duped case-insensitively,
@@ -308,41 +305,18 @@ const isAutoIcon = (icon, category) => {
 // right one wins (e.g. "ice cream" before generic terms, "dairy milk" before "milk", "chilli
 // powder" before "chilli"). Single-word keys match on word boundaries; multi-word / punctuated
 // keys match as substrings.
+// Keyword → category guesses for the Add-item form. Ordered: more specific entries first so the
+// right one wins ("nail polish remover" before "polish", "hair colour" before "colour"). Single-word
+// keys match on word boundaries; multi-word / punctuated keys match as substrings.
 const CATEGORY_KEYWORDS = [
-  ["ice cream", "Ice Cream"], ["kulfi", "Ice Cream"], ["cornetto", "Ice Cream"], ["cassata", "Ice Cream"], ["rajbhog", "Ice Cream"], ["havmor", "Ice Cream"],
-  ["dairy milk", "Chocolates & Candy"], ["chocolate", "Chocolates & Candy"], ["kitkat", "Chocolates & Candy"], ["kit kat", "Chocolates & Candy"], ["5 star", "Chocolates & Candy"], ["munch", "Chocolates & Candy"], ["gems", "Chocolates & Candy"], ["perk", "Chocolates & Candy"], ["candy", "Chocolates & Candy"], ["lollipop", "Chocolates & Candy"], ["ferrero", "Chocolates & Candy"], ["kinder", "Chocolates & Candy"], ["toffee", "Chocolates & Candy"], ["eclair", "Chocolates & Candy"], ["alpenliebe", "Chocolates & Candy"], ["pulse", "Chocolates & Candy"],
-  ["bread", "Bakery & Bread"], ["pav", "Bakery & Bread"], ["khari", "Bakery & Bread"], ["rusk", "Bakery & Bread"], ["bun", "Bakery & Bread"], ["toast", "Bakery & Bread"], ["bakery", "Bakery & Bread"], ["cake", "Bakery & Bread"], ["cream roll", "Bakery & Bread"],
-  ["chilli powder", "Spices & Masala"], ["garam masala", "Spices & Masala"], ["masala", "Spices & Masala"], ["haldi", "Spices & Masala"], ["turmeric", "Spices & Masala"], ["jeera", "Spices & Masala"], ["cumin", "Spices & Masala"], ["dhania", "Spices & Masala"], ["spice", "Spices & Masala"], ["hing", "Spices & Masala"], ["pepper", "Spices & Masala"], ["sambar", "Spices & Masala"],
-  ["ghee", "Oil & Ghee"], ["oil", "Oil & Ghee"],
-  ["tea", "Beverages"], ["coffee", "Beverages"], ["nescafe", "Beverages"], ["bru", "Beverages"], ["bournvita", "Beverages"], ["horlicks", "Beverages"], ["boost", "Beverages"],
-  ["water", "Cold Drinks & Water"], ["bisleri", "Cold Drinks & Water"], ["kinley", "Cold Drinks & Water"], ["cola", "Cold Drinks & Water"], ["coke", "Cold Drinks & Water"], ["pepsi", "Cold Drinks & Water"], ["thums", "Cold Drinks & Water"], ["sprite", "Cold Drinks & Water"], ["fanta", "Cold Drinks & Water"], ["maaza", "Cold Drinks & Water"], ["frooti", "Cold Drinks & Water"], ["juice", "Cold Drinks & Water"], ["sting", "Cold Drinks & Water"], ["red bull", "Cold Drinks & Water"], ["soda", "Cold Drinks & Water"], ["buttermilk", "Cold Drinks & Water"], ["lassi", "Cold Drinks & Water"],
-  ["milk", "Dairy & Eggs"], ["dahi", "Dairy & Eggs"], ["curd", "Dairy & Eggs"], ["paneer", "Dairy & Eggs"], ["cheese", "Dairy & Eggs"], ["butter", "Dairy & Eggs"], ["egg", "Dairy & Eggs"], ["yogurt", "Dairy & Eggs"],
-  ["biscuit", "Snacks & Biscuits"], ["parle", "Snacks & Biscuits"], ["oreo", "Snacks & Biscuits"], ["monaco", "Snacks & Biscuits"], ["chips", "Snacks & Biscuits"], ["lays", "Snacks & Biscuits"], ["lay's", "Snacks & Biscuits"], ["kurkure", "Snacks & Biscuits"], ["bingo", "Snacks & Biscuits"], ["pringles", "Snacks & Biscuits"], ["bhujia", "Snacks & Biscuits"], ["sev", "Snacks & Biscuits"], ["namkeen", "Snacks & Biscuits"], ["wafers", "Snacks & Biscuits"], ["bakarwadi", "Snacks & Biscuits"], ["chakli", "Snacks & Biscuits"], ["mixture", "Snacks & Biscuits"], ["snack", "Snacks & Biscuits"], ["cookies", "Snacks & Biscuits"],
-  ["atta", "Staples & Grains"], ["rice", "Staples & Grains"], ["dal", "Staples & Grains"], ["sugar", "Staples & Grains"], ["salt", "Staples & Grains"], ["poha", "Staples & Grains"], ["rava", "Staples & Grains"], ["sooji", "Staples & Grains"], ["besan", "Staples & Grains"], ["maida", "Staples & Grains"], ["flour", "Staples & Grains"], ["basmati", "Staples & Grains"], ["wheat", "Staples & Grains"], ["chana", "Staples & Grains"], ["rajma", "Staples & Grains"], ["moong", "Staples & Grains"], ["urad", "Staples & Grains"], ["masoor", "Staples & Grains"], ["toor", "Staples & Grains"], ["sabudana", "Staples & Grains"], ["jaggery", "Staples & Grains"], ["vermicelli", "Staples & Grains"], ["daliya", "Staples & Grains"], ["jowar", "Staples & Grains"], ["bajra", "Staples & Grains"], ["ragi", "Staples & Grains"],
-  ["almond", "Dry Fruits & Nuts"], ["cashew", "Dry Fruits & Nuts"], ["kaju", "Dry Fruits & Nuts"], ["badam", "Dry Fruits & Nuts"], ["raisin", "Dry Fruits & Nuts"], ["kishmish", "Dry Fruits & Nuts"], ["walnut", "Dry Fruits & Nuts"], ["pista", "Dry Fruits & Nuts"], ["dates", "Dry Fruits & Nuts"], ["khajur", "Dry Fruits & Nuts"], ["anjeer", "Dry Fruits & Nuts"],
-  ["onion", "Fruits & Vegetables"], ["potato", "Fruits & Vegetables"], ["tomato", "Fruits & Vegetables"], ["banana", "Fruits & Vegetables"], ["lemon", "Fruits & Vegetables"], ["chilli", "Fruits & Vegetables"], ["ginger", "Fruits & Vegetables"], ["garlic", "Fruits & Vegetables"], ["coriander", "Fruits & Vegetables"], ["apple", "Fruits & Vegetables"], ["mango", "Fruits & Vegetables"], ["vegetable", "Fruits & Vegetables"], ["fruit", "Fruits & Vegetables"], ["palak", "Fruits & Vegetables"], ["spinach", "Fruits & Vegetables"],
-  ["maggi", "Frozen & Instant"], ["noodles", "Frozen & Instant"], ["yippee", "Frozen & Instant"], ["pasta", "Frozen & Instant"], ["momos", "Frozen & Instant"], ["fries", "Frozen & Instant"], ["frozen", "Frozen & Instant"], ["batter", "Frozen & Instant"], ["instant", "Frozen & Instant"],
-  ["soap", "Personal Care"], ["shampoo", "Personal Care"], ["toothpaste", "Personal Care"], ["colgate", "Personal Care"], ["toothbrush", "Personal Care"], ["deo", "Personal Care"], ["perfume", "Personal Care"], ["razor", "Personal Care"], ["shaving", "Personal Care"], ["handwash", "Personal Care"], ["sanitary", "Personal Care"], ["stayfree", "Personal Care"], ["whisper", "Personal Care"], ["nivea", "Personal Care"], ["vaseline", "Personal Care"], ["facewash", "Personal Care"], ["lotion", "Personal Care"], ["sanitizer", "Personal Care"], ["dettol", "Personal Care"],
-  ["detergent", "Household & Cleaning"], ["surf", "Household & Cleaning"], ["tide", "Household & Cleaning"], ["ariel", "Household & Cleaning"], ["ghadi", "Household & Cleaning"], ["harpic", "Household & Cleaning"], ["lizol", "Household & Cleaning"], ["phenyl", "Household & Cleaning"], ["broom", "Household & Cleaning"], ["jhadu", "Household & Cleaning"], ["zadu", "Household & Cleaning"], ["scrub", "Household & Cleaning"], ["garbage", "Household & Cleaning"], ["tissue", "Household & Cleaning"], ["foil", "Household & Cleaning"], ["cleaner", "Household & Cleaning"], ["agarbatti", "Household & Cleaning"], ["mosquito", "Household & Cleaning"], ["good knight", "Household & Cleaning"], ["matchbox", "Household & Cleaning"], ["fabric conditioner", "Household & Cleaning"],
-  ["pencil", "Stationery"], ["notebook", "Stationery"], ["eraser", "Stationery"], ["sharpener", "Stationery"], ["marker", "Stationery"], ["glue", "Stationery"], ["stationery", "Stationery"], ["stapler", "Stationery"], ["envelope", "Stationery"], ["ball pen", "Stationery"], ["a4 paper", "Stationery"],
-  ["cricket", "Sports & Toys"], ["football", "Sports & Toys"], ["carrom", "Sports & Toys"], ["badminton", "Sports & Toys"], ["supporter", "Sports & Toys"],
-  // Long-tail coverage for a Marathi kirana store: brands, regional staple names, stationery and
-  // household lines that kept landing in "Other". Appended last so the entries above keep priority.
-  ["book", "Stationery"], ["scale", "Stationery"], ["punch", "Stationery"], ["file", "Stationery"], ["folder", "Stationery"], ["camel", "Stationery"], ["poster colour", "Stationery"], ["acrylic", "Stationery"], ["fabric colour", "Stationery"], ["wax crayon", "Stationery"], ["sketch pen", "Stationery"], ["pen", "Stationery"], ["scissor", "Stationery"], ["calculator", "Stationery"], ["highlighter", "Stationery"], ["whitener", "Stationery"], ["fevikwick", "Stationery"], ["sheet protector", "Stationery"], ["tape", "Stationery"], ["register", "Stationery"], ["cash memo", "Stationery"], ["ledger", "Stationery"], ["khata", "Stationery"], ["diary", "Stationery"], ["china kit", "Stationery"], ["natraj", "Stationery"], ["sundaram", "Stationery"], ["xerox", "Stationery"], ["flair", "Stationery"], ["dotex", "Stationery"], ["lexi", "Stationery"], ["classmate", "Stationery"], ["youva", "Stationery"],
-  ["bhel", "Snacks & Biscuits"], ["murmura", "Snacks & Biscuits"], ["namkin", "Snacks & Biscuits"], ["bikaji", "Snacks & Biscuits"], ["bhakarwadi", "Snacks & Biscuits"], ["chiwda", "Snacks & Biscuits"], ["haldiram", "Snacks & Biscuits"], ["sunfeast", "Snacks & Biscuits"], ["dark fantasy", "Snacks & Biscuits"], ["bourbon", "Snacks & Biscuits"], ["good day", "Snacks & Biscuits"], ["50-50", "Snacks & Biscuits"], ["biscoff", "Snacks & Biscuits"], ["hide & seek", "Snacks & Biscuits"], ["hide and seek", "Snacks & Biscuits"], ["krack jack", "Snacks & Biscuits"], ["malkist", "Snacks & Biscuits"], ["popcorn", "Snacks & Biscuits"], ["bounce", "Snacks & Biscuits"], ["unibic", "Snacks & Biscuits"], ["waffy", "Snacks & Biscuits"], ["belluvita", "Snacks & Biscuits"], ["belvita", "Snacks & Biscuits"], ["lotte", "Snacks & Biscuits"], ["shev", "Snacks & Biscuits"], ["max protein", "Snacks & Biscuits"], ["rajgira", "Snacks & Biscuits"], ["kellogg", "Snacks & Biscuits"], ["chocos", "Snacks & Biscuits"],
-  ["chupa chups", "Chocolates & Candy"], ["snickers", "Chocolates & Candy"], ["hershey", "Chocolates & Candy"], ["nutella", "Chocolates & Candy"], ["milky", "Chocolates & Candy"], ["kissan hazelnut", "Chocolates & Candy"],
-  ["7up", "Cold Drinks & Water"], ["mirinda", "Cold Drinks & Water"],
-  ["red label", "Beverages"], ["brooke bond", "Beverages"],
-  ["cheddar", "Dairy & Eggs"], ["fresh cream", "Dairy & Eggs"], ["mother dairy", "Dairy & Eggs"],
-  ["mccain", "Frozen & Instant"], ["manchurian", "Frozen & Instant"], ["mtr", "Frozen & Instant"], ["spaghetti", "Frozen & Instant"], ["soya chunks", "Frozen & Instant"], ["biryani", "Frozen & Instant"], ["gulab jamun", "Frozen & Instant"], ["gulaab jaam", "Frozen & Instant"], ["gulab jaam", "Frozen & Instant"], ["rasgulla", "Frozen & Instant"], ["pancake", "Frozen & Instant"], ["nutriking", "Frozen & Instant"], ["custard", "Frozen & Instant"],
-  ["ambari", "Spices & Masala"], ["mirchi", "Spices & Masala"], ["badshah", "Spices & Masala"], ["everest", "Spices & Masala"], ["cardmom", "Spices & Masala"], ["cardamom", "Spices & Masala"], ["keya", "Spices & Masala"], ["oregano", "Spices & Masala"], ["origano", "Spices & Masala"], ["kashmiri", "Spices & Masala"], ["mohri", "Spices & Masala"], ["methi", "Spices & Masala"], ["aamchur", "Spices & Masala"], ["chutney", "Spices & Masala"], ["schezwan", "Spices & Masala"], ["soya sauce", "Spices & Masala"], ["vinegar", "Spices & Masala"], ["rassa", "Spices & Masala"], ["imli", "Spices & Masala"], ["suhana", "Spices & Masala"], ["mayo", "Spices & Masala"], ["pickle", "Spices & Masala"], ["achar", "Spices & Masala"],
-  ["aata", "Staples & Grains"], ["bhagar", "Staples & Grains"], ["chawli", "Staples & Grains"], ["gowar", "Staples & Grains"], ["vatana", "Staples & Grains"], ["harbara", "Staples & Grains"], ["kabuli", "Staples & Grains"], ["khobar", "Staples & Grains"], ["kolam", "Staples & Grains"], ["daal", "Staples & Grains"], ["masur", "Staples & Grains"], ["matki", "Staples & Grains"], ["sakhar", "Staples & Grains"], ["shabudana", "Staples & Grains"], ["til", "Staples & Grains"], ["vari", "Staples & Grains"], ["bhajani", "Staples & Grains"], ["bhajni", "Staples & Grains"], ["corn starch", "Staples & Grains"], ["baking powder", "Staples & Grains"], ["baking soda", "Staples & Grains"], ["shevaya", "Staples & Grains"], ["shevi", "Staples & Grains"], ["coconut powder", "Staples & Grains"],
-  ["nankatai", "Bakery & Bread"], ["palekar", "Bakery & Bread"], ["pillsbury", "Bakery & Bread"],
-  ["dove", "Personal Care"], ["engage", "Personal Care"], ["fogg", "Personal Care"], ["park avenue", "Personal Care"], ["wild stone", "Personal Care"], ["ramsons", "Personal Care"], ["denver", "Personal Care"], ["vicks", "Personal Care"], ["wet wipes", "Personal Care"], ["blade", "Personal Care"],
-  ["godrej aer", "Household & Cleaning"], ["aer spray", "Household & Cleaning"], ["vim", "Household & Cleaning"], ["rin", "Household & Cleaning"], ["wheel", "Household & Cleaning"], ["naphthalene", "Household & Cleaning"], ["lighter", "Household & Cleaning"],
-  ["chocotube", "Ice Cream"],
-  ["pumpkin seeds", "Dry Fruits & Nuts"],
-  ["sunflower", "Oil & Ghee"], ["halwa", "Frozen & Instant"], ["varan bhaat", "Frozen & Instant"], ["shrikhand", "Frozen & Instant"], ["ladu", "Snacks & Biscuits"], ["laddu", "Snacks & Biscuits"], ["britannia", "Snacks & Biscuits"], ["hersheys", "Chocolates & Candy"], ["cocoa", "Chocolates & Candy"], ["coco powder", "Chocolates & Candy"], ["funfoods", "Spices & Masala"], ["wipro", "Household & Cleaning"],
+  ["nail polish", "Nail Care"], ["nail paint", "Nail Care"], ["nail art", "Nail Care"], ["cuticle", "Nail Care"], ["acetone", "Nail Care"], ["nail", "Nail Care"], ["manicure", "Nail Care"], ["pedicure", "Nail Care"],
+  ["hair colour", "Colour & Chemicals"], ["hair color", "Colour & Chemicals"], ["developer", "Colour & Chemicals"], ["peroxide", "Colour & Chemicals"], ["ammonia", "Colour & Chemicals"], ["bleach", "Colour & Chemicals"], ["keratin", "Colour & Chemicals"], ["smoothening", "Colour & Chemicals"], ["rebonding", "Colour & Chemicals"], ["botox", "Colour & Chemicals"], ["majirel", "Colour & Chemicals"], ["toner", "Colour & Chemicals"], ["highlight", "Colour & Chemicals"],
+  ["shampoo", "Hair Care"], ["conditioner", "Hair Care"], ["hair mask", "Hair Care"], ["hair spa", "Hair Care"], ["hair oil", "Hair Care"], ["hair serum", "Hair Care"], ["serum", "Hair Care"], ["argan", "Hair Care"], ["dandruff", "Hair Care"], ["scalp", "Hair Care"], ["hair", "Hair Care"],
+  ["sunscreen", "Skin Care"], ["spf", "Skin Care"], ["face wash", "Skin Care"], ["facewash", "Skin Care"], ["facial", "Skin Care"], ["cleanser", "Skin Care"], ["moisturiser", "Skin Care"], ["moisturizer", "Skin Care"], ["cream", "Skin Care"], ["lotion", "Skin Care"], ["scrub", "Skin Care"], ["face pack", "Skin Care"], ["de-tan", "Skin Care"], ["detan", "Skin Care"], ["vitamin c", "Skin Care"], ["salicylic", "Skin Care"], ["skin", "Skin Care"],
+  ["rica", "Waxing & Threading"], ["wax", "Waxing & Threading"], ["waxing", "Waxing & Threading"], ["thread", "Waxing & Threading"], ["strip", "Waxing & Threading"], ["razor", "Waxing & Threading"],
+  ["massage oil", "Spa & Massage"], ["aroma", "Spa & Massage"], ["essential oil", "Spa & Massage"], ["massage", "Spa & Massage"], ["spa", "Spa & Massage"],
+  ["cotton", "Consumables"], ["tissue", "Consumables"], ["towel", "Consumables"], ["glove", "Consumables"], ["apron", "Consumables"], ["cape", "Consumables"], ["disposable", "Consumables"], ["sanitizer", "Consumables"], ["foil", "Consumables"],
+  ["scissor", "Tools & Styling"], ["trimmer", "Tools & Styling"], ["clipper", "Tools & Styling"], ["dryer", "Tools & Styling"], ["straightener", "Tools & Styling"], ["tong", "Tools & Styling"], ["curler", "Tools & Styling"], ["comb", "Tools & Styling"], ["brush", "Tools & Styling"], ["roller", "Tools & Styling"], ["clip", "Tools & Styling"], ["gel", "Tools & Styling"], ["hair spray", "Tools & Styling"], ["styling", "Tools & Styling"], ["pomade", "Tools & Styling"],
 ];
 
 // Guess a category from a typed item name: keyword map first, then a shared-token match against
@@ -366,285 +340,35 @@ function guessCategory(name, items = []) {
 
 // Catalog tuned for a Pashan–Baner (Pune) society convenience store:
 // top-up shoppers, kids' favourites, always-moving chilled stock.
-const SEED_ITEMS = [
-  // Cold Drinks & Water — the never-stops shelf
-  ["Bisleri Water 1L", "Cold Drinks & Water", "pc", 16, 20, 48, 12],
-  ["Bisleri Water 500ml", "Cold Drinks & Water", "pc", 8, 10, 48, 12],
-  ["Kinley Water 1L", "Cold Drinks & Water", "pc", 15, 20, 24, 8],
-  ["Coca-Cola 750ml", "Cold Drinks & Water", "pc", 32, 40, 24, 6],
-  ["Thums Up 750ml", "Cold Drinks & Water", "pc", 32, 40, 24, 6],
-  ["Sprite 750ml", "Cold Drinks & Water", "pc", 32, 40, 18, 6],
-  ["Maaza 600ml", "Cold Drinks & Water", "pc", 30, 38, 18, 6],
-  ["Frooti 250ml Tetra", "Cold Drinks & Water", "pc", 16, 20, 30, 10],
-  ["Sting Energy 250ml", "Cold Drinks & Water", "pc", 16, 20, 24, 8],
-  ["Red Bull 250ml", "Cold Drinks & Water", "pc", 99, 125, 12, 4],
-  ["Paper Boat Aam Panna", "Cold Drinks & Water", "pc", 28, 35, 12, 4],
-  ["Amul Masti Buttermilk 200ml", "Cold Drinks & Water", "pc", 12, 15, 24, 8],
-  // Ice Cream — kids' magnet
-  ["Amul Vanilla Cup 100ml", "Ice Cream", "pc", 16, 20, 24, 8],
-  ["Amul Kulfi Stick", "Ice Cream", "pc", 20, 25, 20, 6],
-  ["Amul Tricone Chocolate", "Ice Cream", "pc", 28, 35, 16, 5],
-  ["Cornetto Double Chocolate", "Ice Cream", "pc", 32, 40, 16, 5],
-  ["Magnum Almond", "Ice Cream", "pc", 72, 90, 10, 3],
-  ["Vadilal Cassata Slice", "Ice Cream", "pc", 48, 60, 8, 3],
-  ["Amul Vanilla Family Pack 700ml", "Ice Cream", "pc", 140, 180, 6, 2],
-  // Chocolates & Candy — pocket-money zone
-  ["Dairy Milk (small)", "Chocolates & Candy", "pc", 8, 10, 60, 15],
-  ["Dairy Milk Silk 60g", "Chocolates & Candy", "pc", 76, 95, 15, 5],
-  ["KitKat 4-Finger", "Chocolates & Candy", "pc", 16, 20, 40, 10],
-  ["5 Star", "Chocolates & Candy", "pc", 8, 10, 50, 12],
-  ["Munch", "Chocolates & Candy", "pc", 8, 10, 50, 12],
-  ["Cadbury Gems", "Chocolates & Candy", "pc", 8, 10, 40, 10],
-  ["Kinder Joy", "Chocolates & Candy", "pc", 40, 50, 20, 6],
-  ["Pulse Candy", "Chocolates & Candy", "pc", 0.8, 1, 200, 50],
-  ["Alpenliebe Lollipop", "Chocolates & Candy", "pc", 1.6, 2, 100, 25],
-  ["Choco Pie Box (12)", "Chocolates & Candy", "box", 110, 140, 8, 3],
-  // Snacks & Biscuits
-  ["Lay's Magic Masala", "Snacks & Biscuits", "packet", 16, 20, 40, 10],
-  ["Kurkure Masala Munch", "Snacks & Biscuits", "packet", 16, 20, 40, 10],
-  ["Bingo Mad Angles", "Snacks & Biscuits", "packet", 16, 20, 24, 8],
-  ["Pringles Original", "Snacks & Biscuits", "pc", 88, 110, 8, 3],
-  ["Haldiram Aloo Bhujia 200g", "Snacks & Biscuits", "packet", 44, 55, 15, 5],
-  ["Parle-G", "Snacks & Biscuits", "packet", 8, 10, 60, 15],
-  ["Oreo Chocolate", "Snacks & Biscuits", "packet", 24, 30, 30, 8],
-  ["Hide & Seek", "Snacks & Biscuits", "packet", 24, 30, 24, 8],
-  ["Britannia Good Day", "Snacks & Biscuits", "packet", 24, 30, 24, 8],
-  ["Little Hearts", "Snacks & Biscuits", "packet", 8, 10, 30, 10],
-  ["Monaco", "Snacks & Biscuits", "packet", 24, 30, 20, 6],
-  // Dairy & Eggs — daily top-ups
-  ["Amul Taaza Milk 500ml", "Dairy & Eggs", "packet", 26, 29, 30, 10],
-  ["Amul Gold Milk 500ml", "Dairy & Eggs", "packet", 31, 34, 24, 8],
-  ["Chitale Full Cream Milk 500ml", "Dairy & Eggs", "packet", 30, 33, 24, 8],
-  ["Amul Dahi 400g", "Dairy & Eggs", "pc", 30, 35, 15, 5],
-  ["Amul Butter 100g", "Dairy & Eggs", "pc", 56, 62, 15, 5],
-  ["Amul Cheese Slices (10)", "Dairy & Eggs", "packet", 130, 145, 10, 3],
-  ["Amul Paneer 200g", "Dairy & Eggs", "packet", 88, 99, 12, 4],
-  ["Eggs", "Dairy & Eggs", "dozen", 75, 90, 15, 5],
-  // Bakery & Bread
-  ["Brown Bread", "Bakery & Bread", "packet", 45, 55, 12, 4],
-  ["White Sandwich Bread", "Bakery & Bread", "packet", 30, 40, 12, 4],
-  ["Ladi Pav (6 pc)", "Bakery & Bread", "packet", 18, 25, 15, 5],
-  ["Pune Khari 200g", "Bakery & Bread", "packet", 35, 50, 10, 3],
-  // Staples — top-up sizes, not bulk
-  ["Aashirvaad Atta 1kg", "Staples & Grains", "packet", 52, 60, 15, 5],
-  ["India Gate Basmati 1kg", "Staples & Grains", "packet", 130, 155, 10, 3],
-  ["Tata Salt 1kg", "Staples & Grains", "packet", 23, 28, 25, 8],
-  ["Sugar 1kg", "Staples & Grains", "kg", 42, 48, 20, 6],
-  ["Toor Dal 1kg", "Staples & Grains", "packet", 140, 165, 10, 3],
-  ["Moong Dal 500g", "Staples & Grains", "packet", 70, 85, 10, 3],
-  ["Poha 500g", "Staples & Grains", "packet", 30, 40, 15, 5],
-  ["Rava 500g", "Staples & Grains", "packet", 28, 35, 12, 4],
-  ["Besan 500g", "Staples & Grains", "packet", 45, 55, 10, 3],
-  // Fruits & Vegetables — emergency veggies
-  ["Onion", "Fruits & Vegetables", "kg", 28, 38, 20, 5],
-  ["Potato", "Fruits & Vegetables", "kg", 22, 30, 20, 5],
-  ["Tomato", "Fruits & Vegetables", "kg", 25, 35, 15, 4],
-  ["Banana", "Fruits & Vegetables", "dozen", 45, 60, 10, 3],
-  ["Lemon", "Fruits & Vegetables", "pc", 4, 6, 40, 10],
-  ["Coriander Bunch", "Fruits & Vegetables", "pc", 8, 15, 15, 5],
-  ["Green Chilli 100g", "Fruits & Vegetables", "packet", 8, 12, 15, 5],
-  ["Ginger 100g", "Fruits & Vegetables", "packet", 8, 12, 12, 4],
-  ["Garlic 100g", "Fruits & Vegetables", "packet", 12, 18, 12, 4],
-  // Oil & Ghee
-  ["Fortune Sunflower Oil 1L", "Oil & Ghee", "packet", 130, 145, 12, 4],
-  ["Saffola Gold 1L", "Oil & Ghee", "packet", 175, 199, 8, 3],
-  ["Amul Ghee 500ml", "Oil & Ghee", "pc", 290, 320, 8, 3],
-  // Beverages (hot)
-  ["Tata Tea Premium 250g", "Beverages", "packet", 72, 85, 12, 4],
-  ["Nescafe Classic 50g", "Beverages", "pc", 150, 170, 10, 3],
-  ["Bru Instant 50g", "Beverages", "pc", 85, 95, 10, 3],
-  ["Bournvita 500g", "Beverages", "pc", 220, 250, 8, 3],
-  ["Horlicks 500g", "Beverages", "pc", 230, 260, 8, 3],
-  // Spices & Masala
-  ["Everest Garam Masala 50g", "Spices & Masala", "packet", 38, 45, 12, 4],
-  ["MDH Chana Masala 100g", "Spices & Masala", "packet", 38, 45, 10, 3],
-  ["Haldi Powder 100g", "Spices & Masala", "packet", 30, 38, 12, 4],
-  ["Red Chilli Powder 100g", "Spices & Masala", "packet", 38, 45, 12, 4],
-  ["Jeera 100g", "Spices & Masala", "packet", 35, 45, 10, 3],
-  // Frozen & Instant — IT-crowd dinner savers
-  ["Maggi 2-Min Noodles", "Frozen & Instant", "packet", 11, 14, 60, 15],
-  ["Yippee Noodles", "Frozen & Instant", "packet", 11, 14, 30, 10],
-  ["Cup Noodles", "Frozen & Instant", "pc", 40, 50, 15, 5],
-  ["ID Dosa Batter 1kg", "Frozen & Instant", "packet", 75, 95, 12, 4],
-  ["McCain French Fries 420g", "Frozen & Instant", "packet", 90, 110, 8, 3],
-  ["Safal Green Peas 500g", "Frozen & Instant", "packet", 60, 75, 8, 3],
-  ["Frozen Veg Momos (12)", "Frozen & Instant", "packet", 110, 140, 6, 2],
-  // Personal Care
-  ["Colgate Strong Teeth 100g", "Personal Care", "pc", 52, 60, 15, 5],
-  ["Dove Soap 100g", "Personal Care", "pc", 48, 58, 15, 5],
-  ["Lifebuoy Soap 125g", "Personal Care", "pc", 28, 34, 15, 5],
-  ["Dove Shampoo 180ml", "Personal Care", "pc", 110, 130, 8, 3],
-  ["Dettol Handwash Refill 175ml", "Personal Care", "pc", 75, 90, 10, 3],
-  ["Gillette Guard Razor", "Personal Care", "pc", 75, 90, 10, 3],
-  ["Stayfree Secure XL (6)", "Personal Care", "packet", 45, 55, 12, 4],
-  // Household & Cleaning
-  ["Vim Bar", "Household & Cleaning", "pc", 8, 10, 25, 8],
-  ["Surf Excel 500g", "Household & Cleaning", "packet", 60, 70, 12, 4],
-  ["Lizol 500ml", "Household & Cleaning", "pc", 95, 110, 8, 3],
-  ["Harpic 500ml", "Household & Cleaning", "pc", 80, 92, 8, 3],
-  ["Garbage Bags Medium (30)", "Household & Cleaning", "packet", 50, 65, 12, 4],
-  ["Scotch-Brite Scrub Pad", "Household & Cleaning", "pc", 18, 25, 15, 5],
-  ["Good Knight Refill", "Household & Cleaning", "pc", 65, 75, 12, 4],
-  ["Aluminium Foil 9m", "Household & Cleaning", "pc", 50, 65, 8, 3],
-  // Stationery
-  ["Classmate Notebook 180pg", "Stationery", "pc", 45, 60, 0, 5],
-  ["Reynolds Ball Pen (Blue)", "Stationery", "pc", 6, 10, 0, 10],
-  ["Apsara Pencil", "Stationery", "pc", 4, 7, 0, 10],
-  ["Non-Dust Eraser", "Stationery", "pc", 3, 5, 0, 10],
-  ["Scale 30cm", "Stationery", "pc", 8, 15, 0, 5],
-  ["A4 Paper Ream (500)", "Stationery", "packet", 260, 320, 0, 3],
-  ["Glue Stick", "Stationery", "pc", 18, 28, 0, 5],
-  ["Marker Pen", "Stationery", "pc", 22, 35, 0, 5],
-  // Sports & Toys — MRP given as 8th value where it differs from selling price
-  ["Hard Hitter Cricket Bat", "Sports & Toys", "pc", 2200, 3500, 0, 2, 2200],
-  ["Sixit Cricket Balls", "Sports & Toys", "pc", 310, 490, 0, 3, 510],
-  ["Abdominal Safety Guard", "Sports & Toys", "pc", 120, 180, 0, 3],
-  ["Batting Supporter", "Sports & Toys", "pc", 90, 140, 0, 3],
-  // Loose staples — 500g / 1kg packs
-  ["Gehu Atta 1kg", "Staples & Grains", "packet", 38, 48, 0, 6],
-  ["Gehu Atta 500g", "Staples & Grains", "packet", 20, 26, 0, 6],
-  ["Samrat Atta 1kg", "Staples & Grains", "packet", 45, 55, 0, 6],
-  ["Sona Masoori Rice 1kg", "Staples & Grains", "kg", 55, 70, 0, 6],
-  ["Kolam Rice 1kg", "Staples & Grains", "kg", 60, 78, 0, 5],
-  ["Toor Dal 500g", "Staples & Grains", "packet", 72, 90, 0, 5],
-  ["Chana Dal 500g", "Staples & Grains", "packet", 40, 52, 0, 5],
-  ["Urad Dal 500g", "Staples & Grains", "packet", 60, 78, 0, 5],
-  ["Masoor Dal 500g", "Staples & Grains", "packet", 45, 58, 0, 5],
-  ["Moong Dal 1kg", "Staples & Grains", "kg", 130, 160, 0, 4],
-  ["Rajma 500g", "Staples & Grains", "packet", 70, 90, 0, 4],
-  ["Kabuli Chana 500g", "Staples & Grains", "packet", 55, 72, 0, 4],
-  ["Sugar 500g", "Staples & Grains", "packet", 22, 26, 0, 6],
-  // Staples & Grains — full dal / rice / flour range in 500g & 1kg packs
-  ["Chana Dal 1kg", "Staples & Grains", "packet", 78, 98, 0, 4],
-  ["Urad Dal 1kg", "Staples & Grains", "packet", 118, 150, 0, 4],
-  ["Masoor Dal 1kg", "Staples & Grains", "packet", 88, 112, 0, 4],
-  ["Rajma 1kg", "Staples & Grains", "packet", 135, 170, 0, 3],
-  ["Kabuli Chana 1kg", "Staples & Grains", "packet", 105, 135, 0, 3],
-  ["Kala Chana 500g", "Staples & Grains", "packet", 40, 52, 0, 5],
-  ["Kala Chana 1kg", "Staples & Grains", "packet", 78, 98, 0, 4],
-  ["Green Moong Whole 500g", "Staples & Grains", "packet", 55, 70, 0, 4],
-  ["Green Moong Whole 1kg", "Staples & Grains", "packet", 105, 130, 0, 3],
-  ["Lobia (Chawli) 500g", "Staples & Grains", "packet", 50, 65, 0, 4],
-  ["Matki (Moth Bean) 500g", "Staples & Grains", "packet", 55, 70, 0, 4],
-  ["Dried Green Peas 500g", "Staples & Grains", "packet", 45, 58, 0, 4],
-  ["Basmati Rice 500g", "Staples & Grains", "packet", 70, 90, 0, 4],
-  ["Sona Masoori Rice 500g", "Staples & Grains", "packet", 30, 40, 0, 5],
-  ["Kolam Rice 500g", "Staples & Grains", "packet", 32, 42, 0, 5],
-  ["Idli Rice 1kg", "Staples & Grains", "kg", 55, 72, 0, 4],
-  ["Brown Rice 1kg", "Staples & Grains", "kg", 75, 95, 0, 3],
-  ["Besan 1kg", "Staples & Grains", "packet", 85, 105, 0, 4],
-  ["Maida 500g", "Staples & Grains", "packet", 22, 30, 0, 5],
-  ["Maida 1kg", "Staples & Grains", "packet", 42, 55, 0, 4],
-  ["Rava / Sooji 1kg", "Staples & Grains", "packet", 50, 65, 0, 4],
-  ["Jowar Atta 1kg", "Staples & Grains", "packet", 55, 70, 0, 4],
-  ["Bajra Atta 1kg", "Staples & Grains", "packet", 55, 70, 0, 4],
-  ["Ragi Atta 1kg", "Staples & Grains", "packet", 65, 82, 0, 3],
-  ["Multigrain Atta 1kg", "Staples & Grains", "packet", 60, 78, 0, 4],
-  ["Rice Flour 500g", "Staples & Grains", "packet", 28, 38, 0, 4],
-  ["Poha 1kg", "Staples & Grains", "packet", 58, 75, 0, 4],
-  ["Sabudana 500g", "Staples & Grains", "packet", 45, 58, 0, 4],
-  ["Daliya (Broken Wheat) 500g", "Staples & Grains", "packet", 30, 40, 0, 4],
-  ["Daliya (Broken Wheat) 1kg", "Staples & Grains", "packet", 55, 72, 0, 4],
-  ["Vermicelli (Shevaya) 500g", "Staples & Grains", "packet", 35, 48, 0, 4],
-  ["Rock Salt (Sendha) 500g", "Staples & Grains", "packet", 25, 35, 0, 4],
-  // Dry Fruits & Nuts — 100/200/250/500g
-  ["Almonds 100g", "Dry Fruits & Nuts", "packet", 75, 95, 0, 4],
-  ["Almonds 250g", "Dry Fruits & Nuts", "packet", 180, 230, 0, 3],
-  ["Cashew 100g", "Dry Fruits & Nuts", "packet", 90, 120, 0, 4],
-  ["Cashew 250g", "Dry Fruits & Nuts", "packet", 220, 280, 0, 3],
-  ["Raisins (Kishmish) 200g", "Dry Fruits & Nuts", "packet", 60, 80, 0, 4],
-  ["Walnuts 200g", "Dry Fruits & Nuts", "packet", 150, 190, 0, 3],
-  ["Pistachios 100g", "Dry Fruits & Nuts", "packet", 110, 140, 0, 3],
-  ["Dates (Khajur) 500g", "Dry Fruits & Nuts", "packet", 90, 120, 0, 4],
-  // Personal care — shaving / shampoo / perfume / cosmetics
-  ["Gillette Shaving Foam 200ml", "Personal Care", "pc", 180, 210, 0, 4],
-  ["Old Spice Shaving Cream 70g", "Personal Care", "pc", 95, 115, 0, 4],
-  ["Gillette Razor Blades (5)", "Personal Care", "packet", 45, 60, 0, 6],
-  ["Clinic Plus Shampoo 175ml", "Personal Care", "pc", 75, 90, 0, 5],
-  ["Head & Shoulders Shampoo 180ml", "Personal Care", "pc", 110, 130, 0, 4],
-  ["Shampoo Sachets (16)", "Personal Care", "packet", 30, 45, 0, 6],
-  ["Fogg Perfume 100ml", "Personal Care", "pc", 230, 290, 0, 3],
-  ["Wild Stone Deo 150ml", "Personal Care", "pc", 180, 220, 0, 3],
-  ["Nivea Cream 100ml", "Personal Care", "pc", 120, 145, 0, 4],
-  ["Vaseline 100ml", "Personal Care", "pc", 95, 115, 0, 4],
-  ["Glow & Lovely Cream 50g", "Personal Care", "pc", 80, 95, 0, 4],
-  // Household — brooms & detergents
-  ["Zadu (Floor Broom)", "Household & Cleaning", "pc", 60, 90, 0, 4],
-  ["Phool Jhadu (Soft Broom)", "Household & Cleaning", "pc", 90, 130, 0, 4],
-  ["Surf Excel 1kg", "Household & Cleaning", "packet", 110, 130, 0, 4],
-  ["Surf Excel Matic 1kg", "Household & Cleaning", "packet", 200, 230, 0, 3],
-  ["Tide 1kg", "Household & Cleaning", "packet", 100, 120, 0, 4],
-  ["Ariel 1kg", "Household & Cleaning", "packet", 180, 210, 0, 3],
-  ["Ghadi Detergent 1kg", "Household & Cleaning", "packet", 60, 75, 0, 4],
-  ["Rin Bar", "Household & Cleaning", "pc", 10, 14, 0, 8],
-  ["Comfort Fabric Conditioner 200ml", "Household & Cleaning", "pc", 45, 60, 0, 4],
-  // Water
-  ["Water Bottle 30L", "Cold Drinks & Water", "pc", 40, 70, 0, 6],
-  // Ice cream — Havmor
-  ["Havmor Vanilla Cup 100ml", "Ice Cream", "pc", 18, 25, 0, 8],
-  ["Havmor Chocolate Cone", "Ice Cream", "pc", 30, 40, 0, 6],
-  ["Havmor Kulfi Stick", "Ice Cream", "pc", 22, 30, 0, 6],
-  ["Havmor Rajbhog 700ml", "Ice Cream", "pc", 160, 210, 0, 3],
-  // Snacks — Haldiram / Bikaji / Lays / Balaji / Chitale
-  ["Haldiram Bhujia Sev 200g", "Snacks & Biscuits", "packet", 48, 60, 0, 5],
-  ["Haldiram Moong Dal 200g", "Snacks & Biscuits", "packet", 45, 58, 0, 5],
-  ["Haldiram Navratan Mix 200g", "Snacks & Biscuits", "packet", 48, 62, 0, 5],
-  ["Bikaji Bhujia 200g", "Snacks & Biscuits", "packet", 45, 58, 0, 5],
-  ["Bikaji Aloo Bhujia 200g", "Snacks & Biscuits", "packet", 45, 58, 0, 5],
-  ["Balaji Wafers Masala 150g", "Snacks & Biscuits", "packet", 30, 40, 0, 6],
-  ["Balaji Chaat Chaska 150g", "Snacks & Biscuits", "packet", 30, 40, 0, 6],
-  ["Lay's Cream & Onion 52g", "Snacks & Biscuits", "packet", 16, 20, 0, 10],
-  ["Lay's India's Magic Masala 52g", "Snacks & Biscuits", "packet", 16, 20, 0, 10],
-  ["Chitale Bakarwadi 200g", "Snacks & Biscuits", "packet", 70, 90, 0, 5],
-  ["Chitale Bhajani Chakli 200g", "Snacks & Biscuits", "packet", 65, 85, 0, 4],
-  // Chocolates — Cadbury & others
-  ["Cadbury Dairy Milk 40g", "Chocolates & Candy", "pc", 35, 45, 0, 8],
-  ["Cadbury Perk", "Chocolates & Candy", "pc", 8, 10, 0, 12],
-  ["Cadbury Fuse", "Chocolates & Candy", "pc", 16, 20, 0, 8],
-  ["Cadbury Celebrations Box", "Chocolates & Candy", "box", 150, 185, 0, 3],
-  ["Ferrero Rocher (4)", "Chocolates & Candy", "packet", 130, 160, 0, 3],
-  // Oils — pouches & Gemini cans
-  ["Sunflower Oil Pouch 1L", "Oil & Ghee", "packet", 120, 140, 0, 5],
-  ["Soyabean Oil Pouch 1L", "Oil & Ghee", "packet", 115, 135, 0, 5],
-  ["Mustard Oil Pouch 1L", "Oil & Ghee", "packet", 140, 165, 0, 4],
-  ["Gemini Refined Oil 5L Can", "Oil & Ghee", "pc", 620, 720, 0, 3],
-  ["Gemini Refined Oil 15L Can", "Oil & Ghee", "pc", 1850, 2100, 0, 2],
-  // Bakery — khari, toast, rusk
-  ["Butter Khari 200g", "Bakery & Bread", "packet", 35, 50, 0, 5],
-  ["Butter Toast 200g", "Bakery & Bread", "packet", 35, 48, 0, 5],
-  ["Milk Rusk 300g", "Bakery & Bread", "packet", 40, 55, 0, 5],
-  ["Fruit Bun (4)", "Bakery & Bread", "packet", 25, 35, 0, 4],
-  ["Cream Roll (6)", "Bakery & Bread", "packet", 40, 55, 0, 4],
-].map(([name, category, unit, buyPrice, sellPrice, , lowAt, mrp]) => ({
-  // Fresh start: every catalogue item begins at 0 stock with no batches.
-  id: uid(), name, category, unit, buyPrice, sellPrice, mrp: mrp ?? sellPrice,
-  stock: 0, lowAt, batches: [], icon: iconFor(category), createdAt: todayStr(),
-}));
+// The opening product shelf: retail lines a salon actually resells, plus the backbar stock it
+// consumes while working. Built in src/lib/seed.js so the data stays pure and testable.
+// Every item starts at 0 stock — the salon counts its real opening stock in.
+const SEED_ITEMS = buildProducts({ uid, today: todayStr(), iconFor });
 
 // Categories of activity recorded in the global Activity Log.
 const LOG_TYPES = ["sale", "inventory", "expense", "import", "backup", "bill", "settings"];
 
-// Store identity — DEFAULTS only. Every field here can be overridden by the owner from
-// Other → Store Settings; the saved config lives at shop/config (see effectiveStore()) and
-// syncs across devices. Address/locality verified (Nancy Hill View is a real complex in
-// Baner, Pune 411021); phone left blank rather than invented. `logo`/`paymentQr` blank => the
-// bundled /public asset is used; a custom upload is stored inline as a data URL. `pcIp` is the
-// shop billing PC's LAN address (e.g. for reaching a local print server on the counter PC).
+// Salon identity — DEFAULTS only, and deliberately generic: this app is meant to be reusable by
+// any salon, so nothing here names a particular business. Every field is overridden by the owner
+// from Settings; the saved config lives at shop/config (see effectiveStore()) and syncs across
+// devices. `logo`/`paymentQr` blank => the bundled /public asset is used; a custom upload is
+// stored inline as a data URL. `pcIp` is the counter PC's LAN address (e.g. for a local print
+// server). Fill these in from Settings before the first receipt is printed.
 const STORE = {
-  name: "Prakash Super Mart",
-  tagline: "Groceries & Daily Needs",
-  address: "Shop No. 16, Nancy Hill View, Baner, Pune 411021",
+  name: "Salon Manager",
+  tagline: "Hair · Skin · Nails · Spa",
+  address: "",
   phone: "",
   pcIp: "",
   logo: "",       // "" => default logo.jpg asset; otherwise a data URL
   paymentQr: "",  // "" => default payment-qr.jpg asset; otherwise a data URL
-  upiId: "",      // UPI VPA (e.g. shop@okhdfcbank). Set => bills show an amount-encoded QR; "" => static image
-  upiName: "",    // payee name shown in the customer's UPI app; "" => fall back to the shop name
+  upiId: "",      // UPI VPA (e.g. salon@okhdfcbank). Set => bills show an amount-encoded QR; "" => static image
+  upiName: "",    // payee name shown in the customer's UPI app; "" => fall back to the salon name
 };
 
-// localStorage key + reader for the store config. Cached separately from the data cache so the
-// pre-auth Login screen can brand itself with the owner's saved shop name/logo instantly.
-const CONFIG_CACHE_KEY = "psm-config-v1";
+// localStorage key + reader for the salon config. Cached separately from the data cache so the
+// pre-auth Login screen can brand itself with the owner's saved salon name/logo instantly.
+const CONFIG_CACHE_KEY = "slm-config-v1";
 const readCachedConfig = () => {
   try { const c = JSON.parse(localStorage.getItem(CONFIG_CACHE_KEY) || "null"); return c && typeof c === "object" ? c : {}; }
   catch { return {}; }
@@ -905,7 +629,7 @@ function StoreManager({ user, onLogout }) {
   // clobbering. Writes are field-level deltas; incoming snapshots are 3-way merged with any
   // un-pushed local edits. A localStorage cache gives instant first paint and offline reads.
   // See src/lib/sync.js for the array↔map bridge.
-  const CACHE_KEY = "psm-cache-v1";
+  const CACHE_KEY = "slm-cache-v1";
   const lastRemote = useRef({ items: {}, sales: {}, expenses: {}, logs: {}, vendorBills: {}, dailyBills: {} }); // last cloud map per slice
   const synced = useRef({ items: false, sales: false, expenses: false, logs: false, vendorBills: false, dailyBills: false });
   const seeded = useRef(false);

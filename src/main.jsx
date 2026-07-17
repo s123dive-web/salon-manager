@@ -1,6 +1,6 @@
 import { StrictMode, Component } from "react";
 import { createRoot } from "react-dom/client";
-import App from "./grocery-store-manager.jsx";
+import App from "./salon-manager.jsx";
 
 // ----------------------------------------------------------------------------
 // Error boundary — without this, any render-time exception unmounts the whole
@@ -21,7 +21,7 @@ class ErrorBoundary extends Component {
         <div style={{ maxWidth: 560, margin: "60px auto", padding: 24, fontFamily: "system-ui, sans-serif" }}>
           <h1 style={{ fontSize: 22, color: "#C44536" }}>Something went wrong</h1>
           <p style={{ color: "#445", lineHeight: 1.5 }}>
-            The app hit an unexpected error. Your saved store data is safe on this device.
+            The app hit an unexpected error. Your saved salon data is safe on this device.
             Try reloading; if it keeps happening, the details below help with debugging.
           </p>
           <pre style={{ background: "#F4F7F4", padding: 12, borderRadius: 8, overflow: "auto", fontSize: 12.5 }}>

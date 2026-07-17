@@ -11,7 +11,46 @@ vi.mock("firebase/database", () => ({
   update: vi.fn(),
 }));
 
-const { toMap, mapToArray, isLegacyShape, buildSliceUpdate, mergeRemote, sanitize } = await import("./sync.js");
+const { toMap, mapToArray, isLegacyShape, buildSliceUpdate, mergeRemote, sanitize, SLICES, readableSlices } = await import("./sync.js");
+
+describe("readableSlices", () => {
+  it("gives the owner every slice", () => {
+    expect(readableSlices("owner").sort()).toEqual([...SLICES].sort());
+  });
+
+  it("withholds the money slices from workers", () => {
+    for (const role of ["biller", "inventory"]) {
+      const readable = readableSlices(role);
+      expect(readable).not.toContain("expenses");
+      expect(readable).not.toContain("vendorBills");
+      expect(readable).not.toContain("dailyBills");
+    }
+  });
+
+  it("still gives workers everything the POS and diary need", () => {
+    for (const role of ["biller", "inventory"]) {
+      const readable = readableSlices(role);
+      for (const s of ["items", "sales", "customers", "services", "staff", "appointments", "logs"]) {
+        expect(readable).toContain(s);
+      }
+    }
+  });
+
+  it("gives an unknown or missing role nothing but the un-gated slices", () => {
+    // `can()` fails closed, so a null role can't reach the money slices either.
+    for (const role of [null, undefined, "admin"]) {
+      const readable = readableSlices(role);
+      expect(readable).not.toContain("expenses");
+      expect(readable).not.toContain("vendorBills");
+    }
+  });
+
+  it("only ever returns real slices", () => {
+    for (const role of ["owner", "biller", "inventory", null]) {
+      readableSlices(role).forEach((s) => expect(SLICES).toContain(s));
+    }
+  });
+});
 
 describe("toMap", () => {
   it("returns {} for null/undefined", () => {

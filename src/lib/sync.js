@@ -14,8 +14,32 @@
 
 import { ref, onValue, set, update } from "firebase/database";
 import { db } from "./firebase.js";
+import { can } from "./roles.js";
 
-export const SLICES = ["items", "sales", "expenses", "logs", "vendorBills", "dailyBills"];
+export const SLICES = [
+  // Ported from the grocery core — same shapes, same merge behaviour.
+  "items", "sales", "expenses", "logs", "vendorBills", "dailyBills",
+  // Salon slices.
+  "customers", "services", "staff", "appointments", "packages", "customerPackages",
+  "messageTemplates",
+];
+
+// Which slices a role is allowed to READ, and therefore to subscribe to. This mirrors the
+// read side of database.rules.json: subscribing to a slice the rules deny would spam the
+// console with permission-denied errors and pop a scary sync-error toast at the counter, so
+// the client simply never asks for what it isn't allowed to have.
+//
+// The money slices (expenses/vendorBills/dailyBills) are the only ones withheld — everything
+// else has to be readable for the POS and the diary to function at all. See the README for
+// why that is an accepted limit rather than a leak we can close in RTDB.
+const SLICE_READ_ACTIONS = {
+  expenses: "expenses.manage",
+  vendorBills: "vendorBills.manage",
+  dailyBills: "vendorBills.manage",
+};
+
+export const readableSlices = (role) =>
+  SLICES.filter((s) => !SLICE_READ_ACTIONS[s] || can(role, SLICE_READ_ACTIONS[s]));
 
 const path = (slice) => "shop/" + slice;
 
@@ -32,6 +56,21 @@ const SORTERS = {
   logs: (a, b) => (b.at || 0) - (a.at || 0), // newest first
   vendorBills: (a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : String(b.id).localeCompare(String(a.id))), // newest first
   dailyBills: (a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : (b.createdAt || 0) - (a.createdAt || 0)), // newest first
+  // Salon slices.
+  customers: (a, b) => String(a.name || "").localeCompare(String(b.name || "")),
+  services: (a, b) =>
+    String(a.category || "").localeCompare(String(b.category || "")) ||
+    String(a.name || "").localeCompare(String(b.name || "")),
+  staff: (a, b) => String(a.name || "").localeCompare(String(b.name || "")),
+  // Chronological: the day view reads these straight through, so date-then-start-time is the
+  // order the diary actually renders in.
+  appointments: (a, b) =>
+    (a.date < b.date ? -1 : a.date > b.date ? 1 : 0) ||
+    (a.startMin || 0) - (b.startMin || 0) ||
+    String(a.id).localeCompare(String(b.id)),
+  packages: (a, b) => String(a.name || "").localeCompare(String(b.name || "")),
+  customerPackages: (a, b) => (b.purchasedAt || 0) - (a.purchasedAt || 0), // newest first
+  messageTemplates: (a, b) => String(a.name || "").localeCompare(String(b.name || "")),
 };
 
 // Accept null / legacy-array / keyed-object → { [id]: record }, keeping only valid records.
@@ -132,6 +171,24 @@ const CONFIG_PATH = "shop/config";
 export const subscribeConfig = (onData, onError) =>
   onValue(ref(db, CONFIG_PATH), (snap) => onData(snap.val()), onError);
 export const writeConfig = (config) => set(ref(db, CONFIG_PATH), sanitize(config));
+
+// ---------- users / roles ----------
+// shop/users/<uid> is keyed by Firebase Auth uid, NOT by a record `id` field, so it does not
+// go through the toMap/mergeRemote machinery above (which keys on rec.id). It is small,
+// owner-written and rarely edited, so it is read whole and written per-uid. Last write wins.
+const USERS_PATH = "shop/users";
+
+export const subscribeUsers = (onData, onError) =>
+  onValue(ref(db, USERS_PATH), (snap) => onData(snap.val()), onError);
+
+// One-shot read of just the signed-in user's own record. Every authenticated user can read
+// their own node (see the $uid .read rule) even before they have a role, which is what lets
+// the app tell "you aren't set up yet" apart from "the network is down".
+export const subscribeOwnUser = (uid, onData, onError) =>
+  onValue(ref(db, `${USERS_PATH}/${uid}`), (snap) => onData(snap.val()), onError);
+
+export const writeUser = (uid, record) => set(ref(db, `${USERS_PATH}/${uid}`), sanitize(record));
+export const updateUser = (uid, fields) => update(ref(db, `${USERS_PATH}/${uid}`), sanitize(fields));
 
 // Live online/offline signal from the RTDB client. cb(true|false).
 export function subscribeConnection(cb) {

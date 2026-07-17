@@ -1,19 +1,189 @@
 {
   "rules": {
-    // ----------------------------------------------------------------------
-    // Realtime Database access is locked to the single shop-owner account.
-    // This is the ONLY thing protecting the data: the Firebase config in
-    // src/lib/firebase.js is public by design, so these rules are the gate.
+    // ========================================================================
+    // Salon Manager — role-based Realtime Database rules.
     //
-    // SETUP (do this once, before relying on the app):
-    //   1. Replace OWNER_EMAIL below with the owner's sign-in email.
-    //   2. Deploy:  firebase deploy --only database
+    // The Firebase config in src/lib/firebase.js is public by design, so these
+    // rules are the real access gate. src/lib/roles.js mirrors this matrix in
+    // the UI; the two MUST be kept in step. The UI decides what renders, these
+    // rules decide what is actually readable and writable.
+    //
+    // Roles live at shop/users/<uid>/role and are one of: owner | biller |
+    // inventory. A user with active === false has no access at all.
+    //
+    // SETUP:
+    //   1. Deploy:  firebase deploy --only database
+    //   2. Sign in with the owner's account FIRST. While shop/users is empty,
+    //      the first authenticated user self-registers as owner (see the
+    //      bootstrap rule below), after which this node locks down and only an
+    //      owner can add users (from Settings → Users in the app).
     //   (Firebase RTDB rules allow these // comments; they're stripped on deploy.)
     //
-    // Optional hardening: append  && auth.token.email_verified == true  to both
-    // lines once the owner's email is verified, to reject unverified sign-ins.
-    // ----------------------------------------------------------------------
-    ".read": "auth != null && auth.token.email == 'OWNER_EMAIL'",
-    ".write": "auth != null && auth.token.email == 'OWNER_EMAIL'"
+    // There is no OWNER_EMAIL placeholder to edit any more — ownership is
+    // claimed by that first sign-in, not hard-coded.
+    //
+    // Reading these rules: RTDB has no functions, so the role lookup
+    //   root.child('shop/users').child(auth.uid)...
+    // is spelled out in full on every node. The repeated shapes are:
+    //   active user →  .../active === true
+    //   owner       →  .../role === 'owner' && .../active === true
+    //   stock duty  →  .../role in ('owner','inventory') && .../active === true
+    // ========================================================================
+
+    // Nothing outside shop/ is readable or writable.
+    ".read": false,
+    ".write": false,
+
+    "shop": {
+      // ---- users: the role registry itself --------------------------------
+      "users": {
+        // Readable by any active user (the app needs names/roles to render the
+        // Users screen). While the node is EMPTY, any authenticated user may
+        // read it — otherwise the very first owner could never discover that
+        // the shop is un-claimed, and bootstrap would deadlock. An empty node
+        // leaks nothing.
+        ".read": "auth != null && (!data.exists() || root.child('shop/users').child(auth.uid).child('active').val() === true)",
+
+        "$uid": {
+          // Always let a user read their OWN record, even when they have none
+          // yet. Without this, a signed-in user with no role could not learn
+          // that they have no role, and the app could not sign them out with a
+          // clear message.
+          ".read": "auth != null && $uid === auth.uid",
+
+          // Two ways to write:
+          //  1. BOOTSTRAP — shop/users is empty and you are claiming your own
+          //     uid as an active owner. This is how the shop gets its first
+          //     owner without a Firebase console visit.
+          //  2. An existing active owner managing anyone.
+          ".write": "auth != null && ((!root.child('shop/users').exists() && $uid === auth.uid && newData.child('role').val() === 'owner' && newData.child('active').val() === true) || (root.child('shop/users').child(auth.uid).child('role').val() === 'owner' && root.child('shop/users').child(auth.uid).child('active').val() === true))",
+
+          // Deletes are allowed (newData won't exist); otherwise a record must
+          // be well-formed. Deactivating is preferred over deleting, so that
+          // past activity keeps resolving to a name.
+          ".validate": "!newData.exists() || newData.hasChildren(['email', 'role', 'active'])",
+
+          "role": { ".validate": "newData.isString() && (newData.val() === 'owner' || newData.val() === 'biller' || newData.val() === 'inventory')" },
+          "email": { ".validate": "newData.isString() && newData.val().length > 3" },
+          "active": { ".validate": "newData.isBoolean()" },
+          "name": { ".validate": "newData.isString()" },
+          "createdAt": { ".validate": "newData.isString() || newData.isNumber()" },
+          "$other": { ".validate": false }
+        }
+      },
+
+      // ---- config: shop identity + loyaltyConfig (a singleton) ------------
+      // Everyone needs to READ it (the receipt, the branding, the loyalty
+      // earn/redeem rates used at billing). Only the owner may change it.
+      "config": {
+        ".read": "auth != null && root.child('shop/users').child(auth.uid).child('active').val() === true",
+        ".write": "auth != null && root.child('shop/users').child(auth.uid).child('role').val() === 'owner' && root.child('shop/users').child(auth.uid).child('active').val() === true"
+      },
+
+      // ---- items: retail + backbar stock ----------------------------------
+      // Read by all (billing sells products). Written by owner + inventory.
+      "items": {
+        ".read": "auth != null && root.child('shop/users').child(auth.uid).child('active').val() === true",
+        ".write": "auth != null && root.child('shop/users').child(auth.uid).child('active').val() === true && (root.child('shop/users').child(auth.uid).child('role').val() === 'owner' || root.child('shop/users').child(auth.uid).child('role').val() === 'inventory')"
+      },
+
+      // ---- sales: bills ----------------------------------------------------
+      // Every active role reads and creates bills — that is the POS. But an
+      // existing bill may only be DELETED by an owner: `newData.exists()`
+      // distinguishes a create/update from a delete. This is what stops a
+      // worker from erasing a sale they rang up.
+      //
+      // NOTE: workers can read sales because the POS cannot work otherwise.
+      // See the README — this is a known and accepted limit of the design.
+      "sales": {
+        ".read": "auth != null && root.child('shop/users').child(auth.uid).child('active').val() === true",
+        "$id": {
+          ".write": "auth != null && root.child('shop/users').child(auth.uid).child('active').val() === true && (newData.exists() || root.child('shop/users').child(auth.uid).child('role').val() === 'owner')"
+        }
+      },
+
+      // ---- appointments -----------------------------------------------------
+      // The diary is shared: every active role books, reschedules and closes
+      // appointments. Deletes are allowed too — a cancellation is a status
+      // change, but removing a mis-typed slot is routine front-desk work.
+      "appointments": {
+        ".read": "auth != null && root.child('shop/users').child(auth.uid).child('active').val() === true",
+        ".write": "auth != null && root.child('shop/users').child(auth.uid).child('active').val() === true"
+      },
+
+      // ---- customers --------------------------------------------------------
+      // Billing must look customers up and quick-create them, so every active
+      // role can read and write this slice. RTDB rules are per-node, so we
+      // cannot grant "create but don't browse" here — the browse restriction is
+      // a UI control only (roles.js: customers.pick vs customers.browse).
+      // Documented in the README.
+      "customers": {
+        ".read": "auth != null && root.child('shop/users').child(auth.uid).child('active').val() === true",
+        ".write": "auth != null && root.child('shop/users').child(auth.uid).child('active').val() === true"
+      },
+
+      // ---- the salon catalogue: read-only for workers -----------------------
+      // Prices, commission rates and package definitions are owner decisions.
+      // Workers read them to bill; they cannot edit them.
+      "services": {
+        ".read": "auth != null && root.child('shop/users').child(auth.uid).child('active').val() === true",
+        ".write": "auth != null && root.child('shop/users').child(auth.uid).child('role').val() === 'owner' && root.child('shop/users').child(auth.uid).child('active').val() === true"
+      },
+      "staff": {
+        ".read": "auth != null && root.child('shop/users').child(auth.uid).child('active').val() === true",
+        ".write": "auth != null && root.child('shop/users').child(auth.uid).child('role').val() === 'owner' && root.child('shop/users').child(auth.uid).child('active').val() === true"
+      },
+      "packages": {
+        ".read": "auth != null && root.child('shop/users').child(auth.uid).child('active').val() === true",
+        ".write": "auth != null && root.child('shop/users').child(auth.uid).child('role').val() === 'owner' && root.child('shop/users').child(auth.uid).child('active').val() === true"
+      },
+      "messageTemplates": {
+        ".read": "auth != null && root.child('shop/users').child(auth.uid).child('active').val() === true",
+        ".write": "auth != null && root.child('shop/users').child(auth.uid).child('role').val() === 'owner' && root.child('shop/users').child(auth.uid).child('active').val() === true"
+      },
+
+      // ---- customerPackages -------------------------------------------------
+      // A sold package is redeemed AT the counter, which decrements usesLeft —
+      // so this has to be writable by whoever is billing.
+      "customerPackages": {
+        ".read": "auth != null && root.child('shop/users').child(auth.uid).child('active').val() === true",
+        ".write": "auth != null && root.child('shop/users').child(auth.uid).child('active').val() === true"
+      },
+
+      // ---- logs: the activity trail -----------------------------------------
+      // Every role WRITES here (that is the point of an audit trail) and every
+      // role can read, because the sync engine has to read a slice once before
+      // it can push deltas to it — a write-only slice would silently never
+      // record worker activity. Logs expose no more than sales already do.
+      // The Logs VIEW is still owner-only (roles.js: logs.view).
+      "logs": {
+        ".read": "auth != null && root.child('shop/users').child(auth.uid).child('active').val() === true",
+        ".write": "auth != null && root.child('shop/users').child(auth.uid).child('active').val() === true"
+      },
+
+      // ---- the money slices: owner-only, read AND write ----------------------
+      // These are the genuinely sensitive nodes, and unlike sales the app has no
+      // operational reason to read them at the counter. The client only
+      // subscribes to these when the signed-in user is an owner, so a worker
+      // never trips a permission-denied here.
+      "expenses": {
+        ".read": "auth != null && root.child('shop/users').child(auth.uid).child('role').val() === 'owner' && root.child('shop/users').child(auth.uid).child('active').val() === true",
+        ".write": "auth != null && root.child('shop/users').child(auth.uid).child('role').val() === 'owner' && root.child('shop/users').child(auth.uid).child('active').val() === true"
+      },
+      "vendorBills": {
+        ".read": "auth != null && root.child('shop/users').child(auth.uid).child('role').val() === 'owner' && root.child('shop/users').child(auth.uid).child('active').val() === true",
+        ".write": "auth != null && root.child('shop/users').child(auth.uid).child('role').val() === 'owner' && root.child('shop/users').child(auth.uid).child('active').val() === true"
+      },
+      "dailyBills": {
+        ".read": "auth != null && root.child('shop/users').child(auth.uid).child('role').val() === 'owner' && root.child('shop/users').child(auth.uid).child('active').val() === true",
+        ".write": "auth != null && root.child('shop/users').child(auth.uid).child('role').val() === 'owner' && root.child('shop/users').child(auth.uid).child('active').val() === true"
+      },
+
+      // Any slice not named above stays denied by the root rules.
+      "$other": {
+        ".read": false,
+        ".write": false
+      }
+    }
   }
 }
