@@ -48,6 +48,11 @@ import {
   blankPackage, validatePackage, makePackage, activePackages,
   sellPackage, redeemablePackages, packageCovering, daysBetweenISO, reconcilePackages,
 } from "./lib/loyalty.js";
+import {
+  KIND_LABELS, KIND_ICONS, SEGMENTS, SEGMENT_COLORS, SEGMENT_HINTS,
+  buildQueue, reminderKey, wasSentRecently, fillTemplate, templateVars, waLink,
+  segmentAll,
+} from "./lib/reminders.js";
 import { uploadBillProof, deleteBillProof, PROOF_ACCEPT, MAX_PROOF_BYTES } from "./lib/bills.js";
 // NOTE: src/lib/dailyBills.js (and its test suite) is carried over intact from the grocery core,
 // but Salon Manager does not ship the Daily-Need Bills section — a salon's consumable purchases
@@ -730,6 +735,7 @@ const TOP_TABS = [
   ["appointments", "📅", "Appointments", "appointments.view"],
   ["billing", "₹", "Billing (POS)", "billing.use"],
   ["customers", "👤", "Customers", "customers.browse"],
+  ["reminders", "🔔", "Reminders", "reminders.use"],
   ["inventory", "▦", "Inventory", "inventory.view"],
   ["sales", "⊟", "Sales History", "sales.view"],
   ["finance", "∑", "Finance", "finance.view"],
@@ -1184,7 +1190,8 @@ function StoreManager({ user, role, onLogout }) {
     dashboard: () => dashboard,
     appointments: () => guard("appointments.view", <Appointments appointments={appointments} setAppointments={setAppointments} customers={customers} setCustomers={setCustomers} services={services} staff={staff} config={config} notify={notify} log={addLog} role={role} onCompleteToBill={completeToBill} />),
     billing: () => guard("billing.use", <Billing items={items} sales={sales} services={services} staff={staff} customers={customers} customerPackages={customerPackages} config={config} setItems={setItems} setSales={setSales} setCustomers={setCustomers} store={store} notify={notify} log={addLog} role={role} user={user} prefill={billPrefill} onPrefillUsed={() => setBillPrefill(null)} onBilled={linkBillToAppointment} />),
-    customers: () => guard("customers.browse", <Customers customers={customers} sales={sales} services={services} staff={staff} customerPackages={customerPackages} config={config} setCustomers={setCustomers} notify={notify} log={addLog} />),
+    customers: () => guard("customers.browse", <Customers customers={customers} sales={sales} services={services} staff={staff} customerPackages={customerPackages} config={config} store={store} setCustomers={setCustomers} notify={notify} log={addLog} />),
+    reminders: () => guard("reminders.use", <Reminders customers={customers} setCustomers={setCustomers} sales={sales} services={services} customerPackages={customerPackages} messageTemplates={messageTemplates} setMessageTemplates={setMessageTemplates} store={store} notify={notify} log={addLog} />),
     services: () => guard("services.manage", <Services services={services} setServices={setServices} notify={notify} log={addLog} />),
     packages: () => guard("packages.manage", <Packages packages={packages} setPackages={setPackages} customerPackages={customerPackages} setCustomerPackages={setCustomerPackages} services={services} customers={customers} setCustomers={setCustomers} setSales={setSales} notify={notify} log={addLog} />),
     staff: () => guard("staff.manage", <Staff staff={staff} setStaff={setStaff} notify={notify} log={addLog} />),
@@ -6470,6 +6477,303 @@ function AppointmentModal({
   );
 }
 
+// ---------- Reminders (owner only) ----------
+// The queue of people worth contacting today, and nothing else. Every row is a fact derived
+// from the bills — a service whose cycle has landed, a birthday, a package about to lapse.
+//
+// Sending is a WhatsApp deep link that a human taps. There is no API and no automation here:
+// the salon decides, message by message. That is a deliberate constraint — it keeps them on
+// the right side of both WhatsApp's terms and their customers' patience.
+function Reminders({ customers, setCustomers, sales, services, customerPackages, messageTemplates, setMessageTemplates, store, notify, log }) {
+  const today = todayStr();
+  const [kindFilter, setKindFilter] = useState("all");
+  const [hideSent, setHideSent] = useState(true);
+  const [composing, setComposing] = useState(null); // { row, templateId, text }
+  const [editingTemplates, setEditingTemplates] = useState(false);
+
+  // The "already contacted" record, read off the customer records.
+  const sentLog = useMemo(() => {
+    const m = {};
+    for (const c of customers) {
+      for (const [kind, at] of Object.entries(c.remindersSentAt || {})) {
+        m[reminderKey(c.phone, kind)] = at;
+      }
+    }
+    return m;
+  }, [customers]);
+
+  const queue = useMemo(
+    () => buildQueue({ customers, sales, services, customerPackages, today, sentLog }),
+    [customers, sales, services, customerPackages, today, sentLog]
+  );
+
+  const counts = useMemo(() => {
+    const m = { all: queue.length };
+    for (const r of queue) m[r.kind] = (m[r.kind] || 0) + 1;
+    return m;
+  }, [queue]);
+
+  const visible = useMemo(
+    () => queue.filter((r) =>
+      (kindFilter === "all" || r.kind === kindFilter) &&
+      // Hide anyone contacted in the last 30 days for this same reason. Sending the same nudge
+      // weekly is the fastest way for a salon to get blocked.
+      !(hideSent && wasSentRecently(r.sentAt, today))
+    ),
+    [queue, kindFilter, hideSent, today]
+  );
+
+  const templatesFor = (kind) => messageTemplates.filter((t) => t.kind === kind && t.active !== false);
+
+  const openCompose = (row) => {
+    const options = templatesFor(row.kind);
+    const t = options[0];
+    const vars = templateVars(row, store.name);
+    setComposing({ row, templateId: t?.id || "", text: t ? fillTemplate(t.body, vars) : "" });
+  };
+
+  const pickTemplate = (id) => setComposing((c) => {
+    const t = messageTemplates.find((x) => x.id === id);
+    return { ...c, templateId: id, text: t ? fillTemplate(t.body, templateVars(c.row, store.name)) : c.text };
+  });
+
+  // Mark sent. Recorded on the customer (so the queue can dedupe across devices and sessions)
+  // AND in the activity log (so there's an audit trail of who contacted whom).
+  const markSent = (row, { silent } = {}) => {
+    setCustomers((list) => list.map((c) =>
+      c.phone === row.phone ? { ...c, remindersSentAt: { ...(c.remindersSentAt || {}), [row.kind]: today } } : c
+    ));
+    log("settings", `Reminder sent — ${KIND_LABELS[row.kind]} to ${row.name || formatPhone(row.phone)}`);
+    if (!silent) notify(`Marked as sent to ${row.name || formatPhone(row.phone)}`);
+  };
+
+  const send = (row, text) => {
+    window.open(waLink(row.phone, text), "_blank", "noopener");
+    markSent(row, { silent: true });
+    setComposing(null);
+    notify(`WhatsApp opened for ${row.name || formatPhone(row.phone)} — press send there`);
+  };
+
+  // Bulk: open each chat in turn. Sequential and manual by design — every message still needs a
+  // human to press send in WhatsApp, which is the point.
+  const sendAll = () => {
+    if (!visible.length) return;
+    if (!confirm(
+      `Open a WhatsApp chat for each of these ${visible.length} customer(s), one at a time?\n\n` +
+      `Each opens with the message filled in — you still press send in WhatsApp. ` +
+      `They'll all be marked as contacted.\n\n` +
+      `Your browser may ask to allow pop-ups.`
+    )) return;
+    visible.forEach((row, i) => {
+      const t = templatesFor(row.kind)[0];
+      if (!t) return;
+      const text = fillTemplate(t.body, templateVars(row, store.name));
+      // Stagger the opens: a burst of window.open() calls trips every pop-up blocker there is.
+      setTimeout(() => window.open(waLink(row.phone, text), "_blank", "noopener"), i * 700);
+      markSent(row, { silent: true });
+    });
+    notify(`Opening ${visible.length} chat(s) — press send in each`);
+  };
+
+  const KIND_TABS = [["all", "Everyone"], ...Object.entries(KIND_LABELS)];
+
+  return (
+    <div>
+      <Header title="Reminders" sub={`${queue.length} customer(s) worth a message today`}>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="btn" onClick={() => setEditingTemplates(true)}>✎ Templates</button>
+          {visible.length > 0 && <button className="btn primary big" onClick={sendAll}>Open all {visible.length} chats</button>}
+        </div>
+      </Header>
+
+      <section style={{ ...S.panel, marginBottom: 14 }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+          {KIND_TABS.map(([k, label]) => (
+            <button
+              key={k} className={"btn small " + (kindFilter === k ? "primary" : "ghost")}
+              onClick={() => setKindFilter(k)}
+            >
+              {k === "all" ? "" : KIND_ICONS[k] + " "}{label}
+              {counts[k] ? ` (${counts[k]})` : ""}
+            </button>
+          ))}
+        </div>
+        <label style={{ fontSize: 12.5, color: "#6B7E74", display: "flex", alignItems: "center", gap: 6 }}>
+          <input type="checkbox" checked={hideSent} onChange={(e) => setHideSent(e.target.checked)} />
+          Hide anyone already contacted in the last 30 days
+        </label>
+      </section>
+
+      {visible.length === 0 ? (
+        <Empty text={queue.length ? "Everyone here has been contacted recently." : "Nobody's due a message today."} />
+      ) : (
+        <section style={S.panel}>
+          <div style={{ overflowX: "auto" }}>
+            <table className="tbl" style={{ width: "100%" }}>
+              <thead><tr><th>Customer</th><th>Why</th><th>Last contacted</th><th /></tr></thead>
+              <tbody>
+                {visible.map((r) => (
+                  <tr key={r.phone}>
+                    <td>
+                      <div style={{ fontWeight: 600 }}>{r.name || "(no name)"}</div>
+                      <div style={{ fontSize: 11.5, color: "#8A9C90" }}>{formatPhone(r.phone)}</div>
+                    </td>
+                    <td style={{ fontSize: 12.5 }}>
+                      <span style={{ fontWeight: 600 }}>{KIND_ICONS[r.kind]} {KIND_LABELS[r.kind]}</span>
+                      <div style={{ color: "#6B7E74" }}>{reasonText(r)}</div>
+                      {r.alsoKinds.length > 0 && (
+                        <div style={{ color: "#A8B8AE", fontSize: 11 }}>
+                          also: {r.alsoKinds.map((k) => KIND_LABELS[k]).join(", ")}
+                        </div>
+                      )}
+                    </td>
+                    <td style={{ fontSize: 12, color: r.sentAt ? "#6B7E74" : "#C3CFC7", whiteSpace: "nowrap" }}>
+                      {r.sentAt || "never"}
+                    </td>
+                    <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                      <button className="btn small primary" onClick={() => openCompose(r)} disabled={!templatesFor(r.kind).length}>
+                        💬 Message
+                      </button>{" "}
+                      <button className="btn small ghost" onClick={() => markSent(r)}>Mark done</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {editingTemplates && (
+        <MessageTemplates
+          templates={messageTemplates} setTemplates={setMessageTemplates}
+          store={store} notify={notify} log={log} onClose={() => setEditingTemplates(false)}
+        />
+      )}
+
+      {composing && (
+        <Modal title={`Message ${composing.row.name || formatPhone(composing.row.phone)}`} onClose={() => setComposing(null)}>
+          <Field label="Template">
+            <select className="input" value={composing.templateId} onChange={(e) => pickTemplate(e.target.value)}>
+              {templatesFor(composing.row.kind).map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Message">
+            <textarea
+              className="input" rows={5} style={{ resize: "vertical" }}
+              value={composing.text} onChange={(e) => setComposing((c) => ({ ...c, text: e.target.value }))}
+            />
+          </Field>
+          <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: -4, lineHeight: 1.6 }}>
+            Edit freely — this is what gets pre-filled in WhatsApp. You still press send there.
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 14 }}>
+            <button className="btn" onClick={() => setComposing(null)}>Cancel</button>
+            <button className="btn primary" onClick={() => send(composing.row, composing.text)} disabled={!composing.text.trim()}>
+              Open WhatsApp
+            </button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ---------- Message templates (owner only) ----------
+// The seeded Hindi/English templates are a starting point, not fixtures — every salon has its
+// own voice, and a message that sounds like the app wrote it gets ignored.
+function MessageTemplates({ templates, setTemplates, store, notify, log, onClose }) {
+  const [draft, setDraft] = useState(() => templates.map((t) => ({ ...t })));
+  const dirty = JSON.stringify(draft) !== JSON.stringify(templates);
+
+  const set = (id, k, v) => setDraft((list) => list.map((t) => (t.id === id ? { ...t, [k]: v } : t)));
+
+  const save = () => {
+    // A template with no {name} isn't a bug, but an empty body is: it would open WhatsApp with
+    // nothing in it, which is worse than not offering the button.
+    const empty = draft.find((t) => t.active !== false && !String(t.body || "").trim());
+    if (empty) return notify(`⚠ “${empty.name}” has no message text.`);
+    setTemplates(draft);
+    log?.("settings", "Updated message templates");
+    notify("✓ Templates saved");
+    onClose();
+  };
+
+  const byKind = useMemo(() => {
+    const m = new Map();
+    for (const t of draft) {
+      if (!m.has(t.kind)) m.set(t.kind, []);
+      m.get(t.kind).push(t);
+    }
+    return [...m.entries()];
+  }, [draft]);
+
+  // A live preview against a plausible customer, so the owner sees the real message rather
+  // than a string full of braces.
+  const preview = (body) =>
+    fillTemplate(body, templateVars({ name: "Asha Patil", days: 32, serviceName: "Haircut" }, store?.name));
+
+  return (
+    <Modal title="Message templates" onClose={onClose}>
+      <div style={{ fontSize: 12, color: "#6B7E74", lineHeight: 1.7, marginBottom: 12 }}>
+        Placeholders: <code>{"{name}"}</code> first name · <code>{"{service}"}</code> the service ·{" "}
+        <code>{"{days}"}</code> days overdue / until expiry · <code>{"{shopName}"}</code> your salon.
+        Anything else stays as literal text.
+      </div>
+      <div style={{ maxHeight: "50vh", overflowY: "auto" }}>
+        {byKind.map(([kind, list]) => (
+          <div key={kind} style={{ marginBottom: 14 }}>
+            <div style={S.panelHead}>{KIND_ICONS[kind]} {KIND_LABELS[kind]}</div>
+            {list.map((t) => (
+              <div key={t.id} style={{ marginBottom: 10 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: "#465", flex: 1 }}>{t.name}</span>
+                  <label style={{ fontSize: 11.5, color: "#8A9C90", display: "flex", alignItems: "center", gap: 4 }}>
+                    <input type="checkbox" checked={t.active !== false} onChange={(e) => set(t.id, "active", e.target.checked)} />
+                    Use this one
+                  </label>
+                </div>
+                <textarea
+                  className="input" rows={3} style={{ resize: "vertical", width: "100%", boxSizing: "border-box" }}
+                  value={t.body} onChange={(e) => set(t.id, "body", e.target.value)}
+                />
+                <div style={{ fontSize: 11.5, color: "#1B5E43", background: "#F4FAF6", borderRadius: 6, padding: "5px 8px", marginTop: 3 }}>
+                  {preview(t.body)}
+                </div>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 12 }}>
+        <button className="btn" onClick={onClose}>Cancel</button>
+        <button className="btn primary" onClick={save} disabled={!dirty}>Save templates</button>
+      </div>
+    </Modal>
+  );
+}
+
+// Plain-English "why this person is in the queue". The owner should never have to work out
+// what a row means before deciding whether to send it.
+function reasonText(r) {
+  switch (r.kind) {
+    case "rebook":
+      return r.overdueBy > 0
+        ? `${r.serviceName} — ${r.overdueBy} day(s) overdue (last: ${r.days} days ago)`
+        : `${r.serviceName} — due today`;
+    case "birthday":
+      return r.days === 0 ? "Today 🎂" : `In ${r.days} day(s)`;
+    case "anniversary":
+      return r.days === 0 ? "Today 💐" : `In ${r.days} day(s)`;
+    case "dormant":
+      return `Last visit ${r.days} days ago`;
+    case "package":
+      return `${r.serviceName} — ${r.usesLeft} session(s) left, expires in ${r.days} day(s)`;
+    default:
+      return "";
+  }
+}
+
 // ---------- Customer editor (shared) ----------
 // Used by the Customers view and by the billing picker's quick-create, so a customer created
 // mid-bill is the same shape as one created deliberately — one form, one validation path.
@@ -6557,21 +6861,31 @@ const makeCustomer = (form, { createdAt = "" } = {}) => {
 // The customer database, and each customer's profile. A biller can look someone up to bill
 // them (the picker) but cannot browse this list — see roles.js: customers.pick vs
 // customers.browse. RTDB can't enforce that split, so it's a UI control; the README says so.
-function Customers({ customers, sales, services, staff, customerPackages, config, setCustomers, notify, log }) {
+function Customers({ customers, sales, services, staff, customerPackages, config, store, setCustomers, notify, log }) {
   const [q, setQ] = useState("");
   const [sort, setSort] = useState("recent");
+  const [segment, setSegment] = useState("All");
   const [editing, setEditing] = useState(null); // phone | "new"
   const [form, setForm] = useState(blankCustomer());
   const [err, setErr] = useState("");
   const [profile, setProfile] = useState(null); // phone whose profile is open
 
+  // RFM segmentation. Rule-based rather than quintile-scored: a 30-customer salon has no
+  // meaningful quintiles, and "hasn't been in for 90 days" is something an owner can act on
+  // in a way that "RFM score 3-4-2" is not.
+  const { rows: segmented, counts: segCounts } = useMemo(
+    () => segmentAll(customers, todayStr()),
+    [customers]
+  );
+
   const listed = useMemo(() => {
     const query = q.trim().toLowerCase();
     const digits = query.replace(/\D+/g, "");
-    const rows = customers.filter((c) =>
-      !query ||
-      String(c.name || "").toLowerCase().includes(query) ||
-      (digits && String(c.phone || "").includes(digits))
+    const rows = segmented.filter((c) =>
+      (segment === "All" || c.segment === segment) &&
+      (!query ||
+        String(c.name || "").toLowerCase().includes(query) ||
+        (digits && String(c.phone || "").includes(digits)))
     );
     const cmp = {
       recent: (a, b) => String(b.lastVisitAt || "").localeCompare(String(a.lastVisitAt || "")),
@@ -6580,7 +6894,30 @@ function Customers({ customers, sales, services, staff, customerPackages, config
       name: (a, b) => String(a.name || "").localeCompare(String(b.name || "")),
     }[sort];
     return [...rows].sort(cmp);
-  }, [customers, q, sort]);
+  }, [segmented, q, sort, segment]);
+
+  // Bulk WhatsApp for the filtered set: sequential deep links, each still sent by a human.
+  const messageAll = () => {
+    const withPhone = listed.filter((c) => c.phone);
+    if (!withPhone.length) return;
+    const body = window.prompt(
+      `Message to send to ${withPhone.length} customer(s) in "${segment}".\n\n` +
+      `{name} is replaced with each customer's first name.`,
+      `Hi {name}! A little something from ${store?.name || "us"} — reply to book your next visit. 💇`
+    );
+    if (body == null || !body.trim()) return;
+    if (!confirm(
+      `Open a WhatsApp chat for each of ${withPhone.length} customer(s), one at a time?\n\n` +
+      `You still press send in each. Your browser may ask to allow pop-ups.`
+    )) return;
+    withPhone.forEach((c, i) => {
+      const text = fillTemplate(body, templateVars({ name: c.name, days: 0 }, store?.name));
+      // Staggered: a burst of window.open() calls trips every pop-up blocker there is.
+      setTimeout(() => window.open(waLink(c.phone, text), "_blank", "noopener"), i * 700);
+    });
+    log("settings", `Bulk message opened for ${withPhone.length} customer(s) — segment ${segment}`);
+    notify(`Opening ${withPhone.length} chat(s) — press send in each`);
+  };
 
   const startNew = () => { setForm(blankCustomer("", todayStr())); setEditing("new"); setErr(""); };
   const startEdit = (c) => { setForm({ ...c }); setEditing(c.phone); setErr(""); };
@@ -6621,6 +6958,24 @@ function Customers({ customers, sales, services, staff, customerPackages, config
       </Header>
 
       <section style={{ ...S.panel, marginBottom: 14 }}>
+        {/* Segments first: "who should I be worrying about" comes before "find this person". */}
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+          <button className={"btn small " + (segment === "All" ? "primary" : "ghost")} onClick={() => setSegment("All")}>
+            All ({customers.length})
+          </button>
+          {SEGMENTS.map((s) => (
+            <button
+              key={s} className={"btn small " + (segment === s ? "primary" : "ghost")}
+              onClick={() => setSegment(s)} title={SEGMENT_HINTS[s]}
+              style={segment === s ? { background: SEGMENT_COLORS[s], borderColor: SEGMENT_COLORS[s] } : { color: SEGMENT_COLORS[s] }}
+            >
+              {s} ({segCounts[s]})
+            </button>
+          ))}
+        </div>
+        {segment !== "All" && (
+          <div style={{ fontSize: 12, color: "#6B7E74", marginBottom: 10 }}>{SEGMENT_HINTS[segment]}</div>
+        )}
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <input className="input" style={{ flex: "1 1 220px" }} placeholder="Search by name or phone…" value={q} onChange={(e) => setQ(e.target.value)} />
           <select className="input" style={{ width: "auto" }} value={sort} onChange={(e) => setSort(e.target.value)}>
@@ -6629,6 +6984,11 @@ function Customers({ customers, sales, services, staff, customerPackages, config
             <option value="visits">Most visits</option>
             <option value="name">Name (A–Z)</option>
           </select>
+          {listed.length > 0 && (
+            <button className="btn" onClick={messageAll} title="Opens a WhatsApp chat per customer, one at a time — you press send in each">
+              💬 Message these {listed.length}
+            </button>
+          )}
         </div>
       </section>
 
@@ -6640,7 +7000,7 @@ function Customers({ customers, sales, services, staff, customerPackages, config
             <table className="tbl" style={{ width: "100%" }}>
               <thead>
                 <tr>
-                  <th>Name</th><th>Phone</th>
+                  <th>Name</th><th>Phone</th><th>Segment</th>
                   <th style={{ textAlign: "right" }}>Visits</th>
                   <th style={{ textAlign: "right" }}>Spend</th>
                   <th>Last visit</th><th />
@@ -6665,6 +7025,9 @@ function Customers({ customers, sales, services, staff, customerPackages, config
                       )}
                     </td>
                     <td style={{ whiteSpace: "nowrap" }}>{formatPhone(c.phone)}</td>
+                    <td>
+                      <span style={{ color: SEGMENT_COLORS[c.segment], fontWeight: 700, fontSize: 12 }}>{c.segment}</span>
+                    </td>
                     <td style={{ textAlign: "right" }}>{c.totalVisits || 0}</td>
                     <td style={{ textAlign: "right", fontWeight: 600 }}>{INR(c.totalSpend || 0)}</td>
                     <td style={{ whiteSpace: "nowrap", color: c.lastVisitAt ? "#334" : "#A8B8AE" }}>{c.lastVisitAt || "never"}</td>

@@ -203,6 +203,7 @@ tested data (no clock, no randomness).
 | [`salon.js`](src/lib/salon.js) | service/staff validation, commission rate resolution, bill-line types | ✅ |
 | [`appointments.js`](src/lib/appointments.js) | the overlap check, grid layout, booking validation | ✅ |
 | [`loyalty.js`](src/lib/loyalty.js) | points maths, tiers, prepaid packages | ✅ |
+| [`reminders.js`](src/lib/reminders.js) | the reminder queue, WhatsApp deep links, RFM segments | ✅ |
 | [`stats.js`](src/lib/stats.js) | revenue/profit series, heatmaps, break-even, salon analytics | ✅ |
 | [`parse.js`](src/lib/parse.js) | tolerant import parser (txt/csv/tsv/xls/xlsx/pdf/json) | ✅ |
 | [`backup.js`](src/lib/backup.js) | JSON/XLSX backup & restore | ✅ |
@@ -239,6 +240,28 @@ Two knowing simplifications, both in [`loyalty.js`](src/lib/loyalty.js):
   the pre-redemption total — otherwise points would earn points.
 - A package covers **one session per bill line**. Adding a second of the same service to one
   bill bumps the quantity at the package's zero price rather than drawing a second session.
+
+### Reminders: how the salon contacts people
+
+The failure mode of this feature is **pestering real customers**, so two rules are enforced in
+[`reminders.js`](src/lib/reminders.js) rather than left to the UI:
+
+1. **Never invent a reason.** Every row is derived from the bills — a service whose rebooking
+   cycle has landed, a birthday, a package about to lapse. A customer who has never visited is
+   never called dormant; a one-off service (bridal makeup) never generates "you're due another".
+2. **One message per customer per day.** Someone who is simultaneously due a haircut, having a
+   birthday and holding an expiring package gets **one** message — the most time-critical
+   reason — with the rest shown as context. Anyone contacted for the same reason in the last 30
+   days is hidden by default.
+
+**Delivery is a WhatsApp deep link that a human taps.** No WhatsApp Business API, no unofficial
+libraries, no automation — the app opens a chat with the message pre-filled and a person presses
+send. Bulk sends open chats one at a time, staggered so pop-up blockers don't eat them. This is
+a deliberate constraint, not a missing feature.
+
+Segments (TOP / Regular / At-risk / Dormant / New) are **rule-based, not quintile-scored**: a
+30-customer salon has no meaningful quintiles, and an owner can act on "hasn't been in for 90
+days" in a way they can't act on "RFM score 3-4-2".
 
 ### The appointment diary
 
