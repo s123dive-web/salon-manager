@@ -20,9 +20,18 @@ import { itemBarcodes, findItemByBarcode, findBarcodeClash, cleanBarcodeList, pa
 import { exportJson, exportXlsx, importXlsx } from "./lib/backup.js";
 import { can, ROLE_LABELS, ROLE_DESCRIPTIONS, ROLES, resolveRole, isBootstrap, validateUserChange } from "./lib/roles.js";
 import {
-  PRODUCT_CATEGORIES, PRODUCT_CATEGORY_ICONS,
+  PRODUCT_CATEGORIES, PRODUCT_CATEGORY_ICONS, SERVICE_CATEGORIES, serviceIconFor,
   buildProducts, buildServices, buildStaff, buildTemplates,
 } from "./lib/seed.js";
+import {
+  normalizePhone, isValidPhone, formatPhone, blankCustomer, searchCustomers,
+  reconcileCustomers, billsForCustomer, toDayMonth, fromDayMonth, isValidDayMonth,
+} from "./lib/customers.js";
+import {
+  blankService, validateService, makeService, activeServices,
+  blankStaff, validateStaff, makeStaff, activeStaff, staffById, staffName,
+  serviceToCartLine, isServiceLine, STAFF_COLORS,
+} from "./lib/salon.js";
 import { uploadBillProof, deleteBillProof, PROOF_ACCEPT, MAX_PROOF_BYTES } from "./lib/bills.js";
 // NOTE: src/lib/dailyBills.js (and its test suite) is carried over intact from the grocery core,
 // but Salon Manager does not ship the Daily-Need Bills section — a salon's consumable purchases
@@ -150,7 +159,7 @@ function printHtml(html, title) {
 // l.price, l.amount, sale.total, discount, payment …) is read straight off the sale and merely
 // laid out for a 72mm (80mm paper) ESC/POS thermal printer. See printHtml() for the print
 // mechanism (isolated iframe document → no app-UI leakage).
-function printReceipt(sale, store = STORE) {
+function printReceipt(sale, store = STORE, staff = []) {
   // Custom logo/QR are stored as data URLs (already absolute); the bundled fallbacks are
   // relative /public assets that must be made absolute for the print iframe (about:blank).
   const logoUrl = store.logo ? store.logo : assetUrl(LOGO_SRC);
@@ -171,7 +180,13 @@ function printReceipt(sale, store = STORE) {
         !l.misc && l.price != null && l.price !== ""
           ? `<span class="sub">@ ${INR(l.price)}${unit}</span>`
           : "";
-      return `<tr><td class="col-name"><span class="nm">${escapeHtml(l.name)}</span>${sub}</td><td class="col-qty">${escapeHtml(String(l.qty))}</td><td class="col-amt">${INR(l.amount)}</td></tr>`;
+      // Name the stylist on the receipt. It's what the customer asks for by name next time,
+      // and it makes the bill checkable against who actually did the work.
+      const by =
+        isServiceLine(l) && l.staffId && staffById(staff, l.staffId)
+          ? `<span class="sub">by ${escapeHtml(staffName(staff, l.staffId))}</span>`
+          : "";
+      return `<tr><td class="col-name"><span class="nm">${escapeHtml(l.name)}</span>${sub}${by}</td><td class="col-qty">${escapeHtml(String(l.qty))}</td><td class="col-amt">${INR(l.amount)}</td></tr>`;
     })
     .join("");
   printHtml(
@@ -697,6 +712,7 @@ const tabEnabled = (k) => FEATURES[k] !== false;
 const TOP_TABS = [
   ["dashboard", "⌂", "Dashboard", null],
   ["billing", "₹", "Billing (POS)", "billing.use"],
+  ["customers", "👤", "Customers", "customers.browse"],
   ["inventory", "▦", "Inventory", "inventory.view"],
   ["sales", "⊟", "Sales History", "sales.view"],
   ["finance", "∑", "Finance", "finance.view"],
@@ -705,6 +721,8 @@ const TOP_TABS = [
   ["expense", "⊝", "Add Expense", "expenses.manage"],
 ];
 const OTHER_TABS = [
+  ["services", "✂", "Services", "services.manage"],
+  ["staff", "🧑‍🎨", "Staff", "staff.manage"],
   ["alerts", "⚠", "Alerts", "alerts.view"],
   ["vendorbills", "🧾", "Vendor Bills", "vendorBills.manage"],
   ["raw", "⇪", "Data Import", "import.use"],
@@ -1042,6 +1060,21 @@ function StoreManager({ user, role, onLogout }) {
     }
   };
 
+  // Keep every customer's denormalized visit/spend stats in step with the bills.
+  //
+  // This lives HERE, at the shell, rather than at each call site that touches a bill — billing,
+  // a Sales History edit, a delete, a split, a restore, an incoming sync from another device.
+  // Any of those can change what a customer has spent, and a reversal bolted onto each one is
+  // a reversal waiting to be forgotten. Reconciling from the bills themselves means there is
+  // no reversal to forget: delete a bill and the stats simply recompute without it.
+  //
+  // reconcileCustomers returns the same array reference when nothing changed, so this settles
+  // after one pass instead of pushing a write to the cloud on every render.
+  useEffect(() => {
+    if (!loaded || !synced.current.customers || !synced.current.sales) return;
+    setCustomers((cs) => reconcileCustomers(cs, sales));
+  }, [sales, customers, loaded]);
+
   const lowStock = items.filter((i) => i.stock <= i.lowAt);
   const alertCount = lowStock.length + items.filter((i) => { const d = daysToExpiry(i); return d != null && d <= 30; }).length;
 
@@ -1073,12 +1106,15 @@ function StoreManager({ user, role, onLogout }) {
   );
   const VIEWS = {
     dashboard: () => dashboard,
-    billing: () => guard("billing.use", <Billing items={items} sales={sales} setItems={setItems} setSales={setSales} store={store} notify={notify} log={addLog} role={role} />),
+    billing: () => guard("billing.use", <Billing items={items} sales={sales} services={services} staff={staff} customers={customers} setItems={setItems} setSales={setSales} setCustomers={setCustomers} store={store} notify={notify} log={addLog} role={role} />),
+    customers: () => guard("customers.browse", <Customers customers={customers} sales={sales} services={services} staff={staff} setCustomers={setCustomers} notify={notify} log={addLog} />),
+    services: () => guard("services.manage", <Services services={services} setServices={setServices} notify={notify} log={addLog} />),
+    staff: () => guard("staff.manage", <Staff staff={staff} setStaff={setStaff} notify={notify} log={addLog} />),
     raw: () => guard("import.use", <RawData items={items} setItems={setItems} setSales={setSales} setExpenses={setExpenses} notify={notify} log={addLog} />),
     inventory: () => guard("inventory.view", <Inventory items={items} setItems={setItems} notify={notify} log={addLog} cats={cats} onAddCategory={addCategory} role={role} />),
     alerts: () => guard("alerts.view", <Alerts items={items} goInventory={() => setTab("inventory")} cats={cats} />),
     barcode: () => guard("barcode.use", <BarcodeCreator items={items} setItems={setItems} store={store} notify={notify} log={addLog} />),
-    sales: () => guard("sales.view", <SalesHistory sales={sales} items={items} setSales={setSales} setItems={setItems} store={store} notify={notify} log={addLog} role={role} />),
+    sales: () => guard("sales.view", <SalesHistory sales={sales} items={items} staff={staff} setSales={setSales} setItems={setItems} store={store} notify={notify} log={addLog} role={role} />),
     finance: () => (tabEnabled("finance") ? guard("finance.view", <Finance sales={sales} expenses={expenses} />) : dashboard),
     stats: () => guard("stats.view", <Stats sales={sales} expenses={expenses} items={items} />),
     udhari: () => guard("udhari.manage", <Udhari sales={sales} setSales={setSales} notify={notify} log={addLog} />),
@@ -1452,15 +1488,144 @@ function Dashboard({ items, sales, lowStock, goBilling }) {
   );
 }
 
-// ---------- Billing / POS ----------
-function Billing({ items, sales, setItems, setSales, store = STORE, notify, log }) {
+// ---------- Customer picker ----------
+// The front desk's entry point to the customer database, and deliberately the ONLY one a
+// biller gets: search and quick-create, never a browsable list. Typing a full unknown number
+// offers to create it on the spot, because the moment to capture a customer is while they're
+// standing at the counter — not later, never.
+//
+// A bill with no customer is still valid: a walk-in who won't give a number must not be a
+// blocker at the till.
+function CustomerPicker({ customers, value, onPick, onCreate, notify }) {
   const [q, setQ] = useState("");
-  const [cart, setCart] = useState([]); // {id, name, icon, unit, sellPrice, buyPrice, qty}
+  const [open, setOpen] = useState(false);
+  const [creating, setCreating] = useState(null); // a draft customer, when quick-creating
+  const [err, setErr] = useState("");
+  const boxRef = useRef(null);
+
+  const picked = value ? customers.find((c) => c.phone === value) : null;
+  const results = useMemo(() => searchCustomers(customers, q, 6), [customers, q]);
+
+  // A fully-typed number that matches nobody → offer to create it.
+  const unknownNumber = useMemo(() => {
+    const p = normalizePhone(q);
+    return isValidPhone(p) && !customers.some((c) => c.phone === p) ? p : "";
+  }, [q, customers]);
+
+  useEffect(() => {
+    const onDown = (e) => { if (boxRef.current && !boxRef.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, []);
+
+  const pick = (c) => { onPick(c.phone); setQ(""); setOpen(false); };
+
+  const startCreate = (phone) => { setCreating(blankCustomer(phone, todayStr())); setErr(""); setOpen(false); };
+
+  const saveCreate = () => {
+    const problem = validateCustomer(creating, customers, true);
+    if (problem) return setErr(problem);
+    const rec = makeCustomer(creating, { createdAt: todayStr() });
+    onCreate(rec);
+    onPick(rec.phone);
+    notify?.(`✓ ${rec.name} added`);
+    setCreating(null);
+    setQ("");
+  };
+
+  if (picked) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#EEF6F1", border: "1px solid #CFE3D7", borderRadius: 9, padding: "7px 10px" }}>
+        <span style={{ width: 26, height: 26, borderRadius: "50%", background: "#1B5E43", color: "#fff", display: "grid", placeItems: "center", fontWeight: 700, fontSize: 12, flexShrink: 0 }}>
+          {String(picked.name || "?").trim().charAt(0).toUpperCase()}
+        </span>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{picked.name}</div>
+          <div style={{ fontSize: 11.5, color: "#6B7E74" }}>
+            {formatPhone(picked.phone)}
+            {picked.totalVisits ? ` · ${picked.totalVisits} visit${picked.totalVisits > 1 ? "s" : ""}` : " · first visit"}
+          </div>
+        </div>
+        <button className="btn ghost" style={{ fontSize: 12 }} onClick={() => onPick("")}>Change</button>
+      </div>
+    );
+  }
+
+  return (
+    <div ref={boxRef} style={{ position: "relative" }}>
+      <input
+        className="input" type="search" placeholder="Search name or phone… (optional)"
+        value={q} onFocus={() => setOpen(true)}
+        onChange={(e) => { setQ(e.target.value); setOpen(true); }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            if (results.length === 1) pick(results[0]);
+            else if (unknownNumber) startCreate(unknownNumber);
+          }
+        }}
+      />
+      {open && (q.trim() || results.length > 0) && (
+        <div style={{ position: "absolute", zIndex: 30, top: "100%", left: 0, right: 0, background: "#fff", border: "1px solid #DDE5DF", borderRadius: 9, marginTop: 4, boxShadow: "0 10px 26px rgba(0,0,0,.13)", overflow: "hidden" }}>
+          {results.map((c) => (
+            <button
+              key={c.phone} onClick={() => pick(c)}
+              style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 10px", border: "none", background: "none", cursor: "pointer", borderBottom: "1px solid #F0F4F1" }}
+            >
+              <div style={{ fontWeight: 600, fontSize: 13 }}>{c.name || "(no name)"}</div>
+              <div style={{ fontSize: 11.5, color: "#6B7E74" }}>
+                {formatPhone(c.phone)}
+                {c.totalVisits ? ` · ${c.totalVisits} visit${c.totalVisits > 1 ? "s" : ""} · ${INR(c.totalSpend || 0)}` : ""}
+              </div>
+            </button>
+          ))}
+          {unknownNumber && (
+            <button
+              onClick={() => startCreate(unknownNumber)}
+              style={{ display: "block", width: "100%", textAlign: "left", padding: "9px 10px", border: "none", background: "#F4FAF6", cursor: "pointer", color: "#1B5E43", fontWeight: 600, fontSize: 13 }}
+            >
+              + Add {formatPhone(unknownNumber)} as a new customer
+            </button>
+          )}
+          {!results.length && !unknownNumber && (
+            <div style={{ padding: "9px 10px", fontSize: 12.5, color: "#8A9C90" }}>
+              {normalizePhone(q).length >= 4 && !isValidPhone(q) ? "Keep typing the full 10-digit number to add them…" : "No match."}
+            </div>
+          )}
+        </div>
+      )}
+
+      {creating && (
+        <Modal title="New customer" onClose={() => setCreating(null)}>
+          <CustomerForm value={creating} onChange={setCreating} isNew err={err} />
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 14 }}>
+            <button className="btn" onClick={() => setCreating(null)}>Cancel</button>
+            <button className="btn primary" onClick={saveCreate}>Add & select</button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ---------- Billing / POS ----------
+function Billing({ items, sales, services, staff, customers, setItems, setSales, setCustomers, store = STORE, notify, log, role }) {
+  const [q, setQ] = useState("");
+  const [cart, setCart] = useState([]); // {id, lineType, name, icon, unit, sellPrice, buyPrice, qty, staffId?}
   const [lastSale, setLastSale] = useState(null);
   const [saleDate, setSaleDate] = useState(todayStr()); // back-date a bill if needed
   const [pay, setPay] = useState("UPI"); // UPI | Cash | Udhari
   const [customer, setCustomer] = useState("");
   const [mobile, setMobile] = useState("");
+  // The picked customer's phone — the durable link from a bill to a customer record. "" is a
+  // legitimate walk-in: someone who won't leave a number must never be a blocker at the till.
+  const [customerPhone, setCustomerPhone] = useState("");
+  // Which half of the catalogue the search pane is showing. A salon bill is mostly services,
+  // so that's the default.
+  const [mode, setMode] = useState("service"); // "service" | "product"
+  // Who gets attributed (and paid commission for) the next service added. Sticky across adds:
+  // one stylist usually does the whole sitting, and re-picking per line would be tedious.
+  const [lineStaff, setLineStaff] = useState("");
   const [paidNow, setPaidNow] = useState(""); // Udhari part-payment taken at billing time
   const [paidMode, setPaidMode] = useState("Cash"); // how that part-payment was received (UPI/Cash)
   const [discount, setDiscount] = useState(""); // optional extra discount on the whole bill
@@ -1502,6 +1667,32 @@ function Billing({ items, sales, setItems, setSales, store = STORE, notify, log 
       .filter((c) => c.name.toLowerCase().includes(q) && c.name.toLowerCase() !== q)
       .slice(0, 6);
   }, [customer, knownCustomers]);
+
+  // The customer this bill is for, if one has been picked. null = walk-in.
+  const picked = useMemo(
+    () => (customerPhone ? customers.find((c) => c.phone === customerPhone) || null : null),
+    [customerPhone, customers]
+  );
+
+  const bookableStaff = useMemo(() => activeStaff(staff), [staff]);
+
+  // The service menu, filtered by the same search box the products use. Only active services:
+  // the menu is what the salon sells today, not what it used to.
+  const serviceResults = useMemo(() => {
+    const query = q.trim().toLowerCase();
+    const live = activeServices(services);
+    const matches = query
+      ? live.filter((s) => String(s.name || "").toLowerCase().includes(query) || String(s.category || "").toLowerCase().includes(query))
+      : live;
+    // Group by category so the pane reads like a menu rather than a flat list.
+    const m = new Map();
+    matches.slice(0, 60).forEach((s) => {
+      const k = s.category || "Other";
+      if (!m.has(k)) m.set(k, []);
+      m.get(k).push(s);
+    });
+    return [...m.entries()];
+  }, [q, services]);
 
   // Units sold per item name — used for the best-seller ★ and as a tie-breaker.
   const soldQty = useMemo(() => {
@@ -1556,7 +1747,7 @@ function Billing({ items, sales, setItems, setSales, store = STORE, notify, log 
     const ex = cart.find((c) => c.id === item.id);
     return ex
       ? cart.map((c) => (c.id === item.id ? { ...c, qty: c.qty + 1 } : c))
-      : [...cart, { id: item.id, name: item.name, icon: item.icon, unit: item.unit, sellPrice: item.sellPrice, buyPrice: item.buyPrice, qty: 1 }];
+      : [...cart, { id: item.id, lineType: "product", name: item.name, icon: item.icon, unit: item.unit, sellPrice: item.sellPrice, buyPrice: item.buyPrice, qty: 1 }];
   });
 
   const add = (item) => {
@@ -1565,6 +1756,21 @@ function Billing({ items, sales, setItems, setSales, store = STORE, notify, log 
     if (ex && ex.qty + 1 > item.stock) return notify("Only " + item.stock + " " + item.unit + " in stock");
     pushToCart(item);
   };
+
+  // Put a service on the bill, attributed to whoever is currently selected. Unlike a product
+  // there is no stock to check — labour doesn't run out — and repeating a service (a second
+  // threading, say) just bumps the quantity.
+  const addService = (service) => setCart((cart) => {
+    const ex = cart.find((c) => c.id === service.id);
+    return ex
+      ? cart.map((c) => (c.id === service.id ? { ...c, qty: c.qty + 1 } : c))
+      : [...cart, serviceToCartLine(service, lineStaff)];
+  });
+
+  // Re-attribute one service line. Sittings do get split — a colour by one stylist, the
+  // blow-dry by another — and commission has to follow the person who actually did the work.
+  const setLineStaffFor = (id, staffId) =>
+    setCart((cart) => cart.map((c) => (c.id === id ? { ...c, staffId } : c)));
 
   // Scanning a barcode always adds the item to the bill — even at zero stock. A sold-out item is
   // auto-restocked to SCAN_RESTOCK_QTY (5) so the till isn't blocked; the restock is guarded by a
@@ -1582,8 +1788,9 @@ function Billing({ items, sales, setItems, setSales, store = STORE, notify, log 
   };
   const setQty = (id, qty) => {
     const line = cart.find((c) => c.id === id);
-    // Misc / custom lines have no inventory item, so they aren't stock-limited.
-    if (line && !line.misc) {
+    // Misc / custom lines have no inventory item, and a SERVICE has no stock at all — labour
+    // doesn't run out. Stock-limiting either would clamp them to 0 and silently drop the line.
+    if (line && !line.misc && !isServiceLine(line)) {
       const stock = items.find((i) => i.id === id)?.stock ?? 0;
       if (qty > stock) { notify("Only " + stock + " in stock"); qty = stock; }
     }
@@ -1681,10 +1888,15 @@ function Billing({ items, sales, setItems, setSales, store = STORE, notify, log 
 
   const completeSale = () => {
     if (cart.length === 0) return;
+    // Every service line must say who performed it, or its commission has nowhere to go and
+    // the stylist quietly loses the money. Cheaper to catch here than to reconcile at payout.
+    const unassigned = cart.filter((c) => isServiceLine(c) && !c.staffId);
+    if (unassigned.length) return notify(`Who did “${unassigned[0].name}”? Pick a staff member for every service.`);
     // Re-check against the latest stock: another device (or a just-synced change) may have
     // reduced it since these lines were added to the cart. Block rather than oversell.
+    // Services are exempt — they consume no stock.
     const short = cart
-      .filter((c) => !c.misc)
+      .filter((c) => !c.misc && !isServiceLine(c))
       .map((c) => ({ c, stock: items.find((i) => i.id === c.id)?.stock ?? 0 }))
       .filter(({ c, stock }) => c.qty > stock);
     if (short.length) {
@@ -1699,30 +1911,48 @@ function Billing({ items, sales, setItems, setSales, store = STORE, notify, log 
       time: now.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) + (backDated ? " (back-dated)" : ""),
       // Snapshot buyPrice onto each line so historical profit stays anchored to the cost at
       // sale time, even if the item's cost is changed (or the item deleted) later.
-      lines: cart.map((c) => ({ name: c.name, qty: c.qty, unit: c.unit, price: c.sellPrice, buyPrice: c.buyPrice, amount: money(c.sellPrice * c.qty), ...(c.misc ? { misc: true } : {}) })),
+      //
+      // Service lines additionally snapshot staffId and commissionPct: a payout report must
+      // reflect the rate that was in force when the work was done, not whatever the owner has
+      // set by the time the report is run. Same reasoning as buyPrice.
+      lines: cart.map((c) => ({
+        name: c.name, qty: c.qty, unit: c.unit, price: c.sellPrice, buyPrice: c.buyPrice,
+        amount: money(c.sellPrice * c.qty),
+        lineType: isServiceLine(c) ? "service" : "product",
+        ...(isServiceLine(c) ? { staffId: c.staffId, commissionPct: c.commissionPct ?? 0, serviceId: c.id } : {}),
+        ...(c.misc ? { misc: true } : {}),
+      })),
       total, profit,
       // Only recorded when a discount was actually given, so plain bills keep their exact old shape.
       // `subtotal` is the pre-discount amount; `total` above is what the customer paid.
       ...(discountAmt > 0 ? { subtotal, discount: discountAmt, ...(discMode === "%" ? { discountPct: money(discNum) } : {}) } : {}),
       payment: pay,
-      // Customer name & mobile are optional on any bill (not just Udhari).
-      ...(customer.trim() ? { customer: customer.trim() } : {}),
-      ...(mobile.trim() ? { mobile: mobile.trim() } : {}),
+      // The durable link to the customer record. Legacy `customer`/`mobile` free text is still
+      // written alongside it: Udhari groups bills by name, and old bills only have that.
+      ...(picked ? { customerPhone: picked.phone, customer: picked.name, mobile: picked.phone } : {}),
+      ...(!picked && customer.trim() ? { customer: customer.trim() } : {}),
+      ...(!picked && mobile.trim() ? { mobile: mobile.trim() } : {}),
       // For Udhari (credit), record how much was paid now (and via UPI/Cash); rest stays outstanding.
       ...(pay === "Udhari" ? { paid: Math.min(total, Math.max(0, money(+paidNow || 0))) } : {}),
       ...(pay === "Udhari" && +paidNow > 0 ? { paidMode } : {}),
     };
     setSales((s) => [...s, sale]);
+    // Deplete stock for PRODUCT lines only. A service id can't collide with an item id, but
+    // filtering by line type says the intent out loud rather than relying on that.
     setItems((its) => its.map((i) => {
-      const c = cart.find((x) => x.id === i.id);
+      const c = cart.find((x) => x.id === i.id && !isServiceLine(x));
       return c ? removeStock(i, c.qty, saleDate) : i; // FIFO deplete batches by expiry
     }));
     setLastSale(sale);
-    log("sale", `Bill ${INR(total)} · ${cart.length} item(s) · ${pay}` + (discountAmt > 0 ? ` · disc ${INR(discountAmt)}` : "") + (customer.trim() ? ` (${customer.trim()})` : "") + (backDated ? ` · back-dated to ${saleDate}` : ""));
+    const nServices = cart.filter(isServiceLine).length;
+    const nProducts = cart.length - nServices;
+    const what = [nServices ? `${nServices} service(s)` : "", nProducts ? `${nProducts} product(s)` : ""].filter(Boolean).join(" + ");
+    log("sale", `Bill ${INR(total)} · ${what} · ${pay}` + (discountAmt > 0 ? ` · disc ${INR(discountAmt)}` : "") + (picked ? ` (${picked.name})` : customer.trim() ? ` (${customer.trim()})` : "") + (backDated ? ` · back-dated to ${saleDate}` : ""));
     setCart([]);
     setQ("");
     setCustomer("");
     setMobile("");
+    setCustomerPhone("");
     setPaidNow("");
     setPaidMode("Cash");
     setDiscount("");
@@ -1732,25 +1962,80 @@ function Billing({ items, sales, setItems, setSales, store = STORE, notify, log 
 
   return (
     <div>
-      <Header title="Billing" sub="Tap an item to add it to the bill">
-        <label style={{ fontSize: 12, color: saleDate === todayStr() ? "#6B7E74" : "#C44536", fontWeight: 600 }}>
-          Bill date{" "}
-          <input type="date" className="input" style={{ width: "auto", marginLeft: 4 }} value={saleDate} max={todayStr()} onChange={(e) => setSaleDate(e.target.value || todayStr())} />
-        </label>
+      <Header title="Billing" sub={mode === "service" ? "Tap a service to add it to the bill" : "Tap a product to add it to the bill"}>
+        {can(role, "billing.backdate") ? (
+          <label style={{ fontSize: 12, color: saleDate === todayStr() ? "#6B7E74" : "#C44536", fontWeight: 600 }}>
+            Bill date{" "}
+            <input type="date" className="input" style={{ width: "auto", marginLeft: 4 }} value={saleDate} max={todayStr()} onChange={(e) => setSaleDate(e.target.value || todayStr())} />
+          </label>
+        ) : (
+          // A worker bills today. Back-dating moves revenue between days and is an owner call.
+          <span style={{ fontSize: 12, color: "#6B7E74" }}>Bill date · {saleDate}</span>
+        )}
       </Header>
       <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 16 }}>
-        {/* item picker */}
+        {/* service / item picker */}
         <section style={S.panel}>
+          {/* A salon bill is mostly services with the odd retail add-on, so the two halves of
+              the catalogue get their own pane rather than being mixed into one list. */}
+          <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+            {[["service", "✂ Services"], ["product", "🧴 Products"]].map(([m, label]) => (
+              <button
+                key={m} className={"btn" + (mode === m ? " primary" : "")} style={{ flex: 1 }}
+                onClick={() => { setMode(m); setQ(""); searchRef.current?.focus(); }}
+              >{label}</button>
+            ))}
+          </div>
           <input
             ref={searchRef}
             className="input"
-            placeholder="Search name / barcode / price… (Enter adds top match)"
+            placeholder={mode === "service" ? "Search services…" : "Search name / barcode / price… (Enter adds top match)"}
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            onKeyDown={onSearchKey}
-            aria-label="Search items or scan barcode"
+            onKeyDown={mode === "product" ? onSearchKey : undefined}
+            aria-label={mode === "service" ? "Search services" : "Search items or scan barcode"}
             style={{ marginBottom: 12 }}
           />
+
+          {mode === "service" ? (
+            <>
+              {/* Who's doing the work. Sticky across adds — one stylist usually does the whole
+                  sitting — but each line can be re-attributed in the cart. */}
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12, padding: "8px 10px", background: "#F4F7F4", borderRadius: 8, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 11.5, fontWeight: 700, color: "#465", whiteSpace: "nowrap" }}>Performed by</span>
+                <select className="input" style={{ flex: 1, minWidth: 130 }} value={lineStaff} onChange={(e) => setLineStaff(e.target.value)}>
+                  <option value="">Choose staff…</option>
+                  {bookableStaff.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+              </div>
+              {bookableStaff.length === 0 && (
+                <div style={{ fontSize: 12.5, color: "#B23B2E", marginBottom: 10 }}>
+                  No active staff yet — add someone under Staff before billing a service.
+                </div>
+              )}
+              {serviceResults.length === 0 ? (
+                <Empty text={services.length ? "No services match." : "No services on the menu yet."} />
+              ) : serviceResults.map(([category, list]) => (
+                <div key={category} style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "#8A9C90", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 6 }}>
+                    {serviceIconFor(category)} {category}
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                    {list.map((s) => (
+                      <div key={s.id} className="pick" style={{ cursor: "pointer" }} onClick={() => addService(s)}>
+                        <div style={{ fontWeight: 700, fontSize: 13.5 }}>{s.name}</div>
+                        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontSize: 12.5 }}>
+                          <span style={{ color: "#1B5E43", fontWeight: 800 }}>{INR(s.price)}</span>
+                          <span style={{ color: "#789" }}>{s.durationMin} min</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </>
+          ) : (
+          <>
           {/* Misc row → quick "add & catalogue": bills the item AND registers it in inventory
               (opening stock 20, auto category). Barcode is optional; given → it scans next time. */}
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", marginBottom: 12, padding: "8px 10px", background: "#F4F7F4", borderRadius: 8 }}>
@@ -1786,21 +2071,35 @@ function Billing({ items, sales, setItems, setSales, store = STORE, notify, log 
             })}
             {results.length === 0 && <Empty text="No items match. Add it from Inventory first." />}
           </div>
+          </>
+          )}
         </section>
 
         {/* receipt cart */}
         <section style={S.receipt}>
           <div style={S.receiptHead}>CURRENT BILL</div>
+
+          {/* Who the bill is for. Optional — a walk-in who won't leave a number must never be
+              a blocker at the till — but capturing it here is what makes every returning-
+              customer feature downstream possible. */}
+          <div style={{ marginBottom: 10 }}>
+            <CustomerPicker
+              customers={customers} value={customerPhone} onPick={setCustomerPhone}
+              onCreate={(rec) => setCustomers((list) => [...list, rec])}
+              notify={notify}
+            />
+          </div>
+
           {cart.length === 0 ? (
-            <Empty text="Bill is empty. Tap items on the left to add.">
+            <Empty text="Bill is empty. Tap services or products on the left to add.">
               {lastSale && (
-                <button className="btn" onClick={() => printReceipt(lastSale, store)}>🖨 Print last bill · {INR(lastSale.total)}</button>
+                <button className="btn" onClick={() => printReceipt(lastSale, store, staff)}>🖨 Print last bill · {INR(lastSale.total)}</button>
               )}
             </Empty>
           ) : (
             <>
               {cart.map((c) => (
-                <div key={c.id} style={S.rcptLine}>
+                <div key={c.id} style={{ ...S.rcptLine, flexWrap: "wrap" }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}><span style={{ marginRight: 4 }}>{c.icon || "📦"}</span>{c.name}</div>
                     <div style={{ fontSize: 11.5, color: "#777" }}>{INR(c.sellPrice)} × {c.qty} {c.unit}</div>
@@ -1811,6 +2110,19 @@ function Billing({ items, sales, setItems, setSales, store = STORE, notify, log 
                     <button className="qty" aria-label={"Increase " + c.name} onClick={() => setQty(c.id, c.qty + 1)}>+</button>
                   </div>
                   <b style={{ width: 76, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{INR(c.sellPrice * c.qty)}</b>
+                  {/* Per-line attribution: a sitting can be split across stylists, and the
+                      commission has to follow whoever actually did each piece. */}
+                  {isServiceLine(c) && (
+                    <select
+                      className="input"
+                      style={{ flexBasis: "100%", padding: "3px 6px", fontSize: 11.5, marginTop: 4, borderColor: c.staffId ? undefined : "#E0A96D" }}
+                      value={c.staffId || ""} onChange={(e) => setLineStaffFor(c.id, e.target.value)}
+                      aria-label={"Who performed " + c.name}
+                    >
+                      <option value="">⚠ Who did this?</option>
+                      {bookableStaff.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                  )}
                 </div>
               ))}
               {/* Optional additional discount on the whole bill (₹ off, or a % of the subtotal). */}
@@ -1852,29 +2164,36 @@ function Billing({ items, sales, setItems, setSales, store = STORE, notify, log 
                   </button>
                 ))}
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 8 }}>
-                <div style={{ position: "relative" }}>
-                  <input className="input" autoComplete="off" placeholder={pay === "Udhari" ? "Customer name (owes)" : "Customer name (optional)"} value={customer}
-                    onChange={(e) => setCustomer(e.target.value)}
-                    onFocus={() => setCustFocus(true)}
-                    onBlur={() => setTimeout(() => setCustFocus(false), 120)}
-                    aria-label="Customer name" />
-                  {custFocus && custSuggestions.length > 0 && (
-                    <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 30, background: "#fff", border: "1px solid #DDE8DE", borderRadius: 9, marginTop: 2, boxShadow: "0 8px 24px rgba(0,0,0,.14)", overflow: "hidden" }}>
-                      {custSuggestions.map((c) => (
-                        // onMouseDown (not onClick) so selection fires before the input's blur closes the list.
-                        <button key={c.name} type="button"
-                          onMouseDown={(e) => { e.preventDefault(); setCustomer(c.name); if (c.mobile) setMobile(c.mobile); setCustFocus(false); }}
-                          style={{ display: "flex", justifyContent: "space-between", gap: 8, width: "100%", textAlign: "left", background: "none", border: "none", borderBottom: "1px solid #F0F4F0", padding: "8px 10px", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>
-                          <span style={{ fontWeight: 600 }}>{c.name}</span>
-                          <span style={{ color: "#8A9C90" }}>{c.mobile || "—"}</span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
+              {/* The free-text name/mobile fields are the pre-customer-database way of putting a
+                  name on a bill. They stay for the walk-in who isn't worth a profile — and for
+                  Udhari, which groups debts by name and needs SOMETHING to group by. Once a
+                  customer is picked they're redundant, and showing both invites two versions of
+                  the same person on one bill. */}
+              {!picked && (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 8 }}>
+                  <div style={{ position: "relative" }}>
+                    <input className="input" autoComplete="off" placeholder={pay === "Udhari" ? "Customer name (owes)" : "Name (optional)"} value={customer}
+                      onChange={(e) => setCustomer(e.target.value)}
+                      onFocus={() => setCustFocus(true)}
+                      onBlur={() => setTimeout(() => setCustFocus(false), 120)}
+                      aria-label="Customer name" />
+                    {custFocus && custSuggestions.length > 0 && (
+                      <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 30, background: "#fff", border: "1px solid #DDE8DE", borderRadius: 9, marginTop: 2, boxShadow: "0 8px 24px rgba(0,0,0,.14)", overflow: "hidden" }}>
+                        {custSuggestions.map((c) => (
+                          // onMouseDown (not onClick) so selection fires before the input's blur closes the list.
+                          <button key={c.name} type="button"
+                            onMouseDown={(e) => { e.preventDefault(); setCustomer(c.name); if (c.mobile) setMobile(c.mobile); setCustFocus(false); }}
+                            style={{ display: "flex", justifyContent: "space-between", gap: 8, width: "100%", textAlign: "left", background: "none", border: "none", borderBottom: "1px solid #F0F4F0", padding: "8px 10px", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>
+                            <span style={{ fontWeight: 600 }}>{c.name}</span>
+                            <span style={{ color: "#8A9C90" }}>{c.mobile || "—"}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <input className="input" type="tel" inputMode="numeric" maxLength={15} placeholder="Mobile (optional)" value={mobile} onChange={(e) => setMobile(e.target.value)} aria-label="Customer mobile" />
                 </div>
-                <input className="input" type="tel" inputMode="numeric" maxLength={15} placeholder="Mobile (optional)" value={mobile} onChange={(e) => setMobile(e.target.value)} aria-label="Customer mobile" />
-              </div>
+              )}
               {pay === "Udhari" && (
                 <div style={{ marginTop: 8 }}>
                   <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
@@ -3050,7 +3369,7 @@ function RawData({ items, setItems, setSales, setExpenses, notify, log }) {
 // ---------- Sales history ----------
 const PAY_COLORS = { UPI: "#2A6FB0", Cash: "#1B5E43", Udhari: "#C44536" };
 
-function SalesHistory({ sales, items, setSales, setItems, store = STORE, notify, log }) {
+function SalesHistory({ sales, items, staff, setSales, setItems, store = STORE, notify, log, role }) {
   const [open, setOpen] = useState(null);
   const [openDates, setOpenDates] = useState(() => new Set()); // expanded past dates (today is always open)
   const [from, setFrom] = useState("");
@@ -3095,12 +3414,22 @@ function SalesHistory({ sales, items, setSales, setItems, store = STORE, notify,
   };
 
   const deleteSale = (s) => {
+    // Belt and braces: the nav never offers this view's delete to a worker, and the database
+    // rules reject the write anyway — but the guard belongs next to the action too.
+    if (!can(role, "sales.delete")) return notify("⚠ Only the owner can delete a bill.");
     if (!confirm(`Delete this ${INR(s.total)} bill from ${s.date}? Stock will be added back.`)) return;
     const deltas = {};
-    // Misc / custom lines have no inventory item, so there is no stock to restore for them.
-    s.lines.forEach((l) => { if (l.misc) return; deltas[l.name.toLowerCase()] = (deltas[l.name.toLowerCase()] || 0) - l.qty; });
+    // Misc / custom lines have no inventory item, and SERVICE lines have no stock at all, so
+    // neither has anything to restore. Without the service guard a service that happens to
+    // share a name with a product would silently inflate that product's stock on every delete.
+    s.lines.forEach((l) => {
+      if (l.misc || isServiceLine(l)) return;
+      deltas[l.name.toLowerCase()] = (deltas[l.name.toLowerCase()] || 0) - l.qty;
+    });
     applyDeltas(deltas);
     setSales((all) => all.filter((x) => x.id !== s.id));
+    // The customer's visit/spend stats reverse themselves: the shell reconciles them from the
+    // bills, so removing the bill is the whole of the reversal. See reconcileCustomers.
     log("sale", `Deleted bill ${INR(s.total)} (${s.date}) — stock restored`);
     notify("Bill deleted, stock restored");
   };
@@ -3199,9 +3528,12 @@ function SalesHistory({ sales, items, setSales, setItems, store = STORE, notify,
     const buyOf = (l) => (l.buyPrice != null ? +l.buyPrice : (items.find((i) => i.name.toLowerCase() === l.name.toLowerCase())?.buyPrice || 0));
     const profit = money(newLines.reduce((a, l) => a + (l.price - buyOf(l)) * l.qty, 0) - discountAmt);
     const oldQ = {}, newQ = {};
-    // Misc / custom lines aren't inventory-backed, so they don't drive stock reconciliation.
-    editing.orig.forEach((l) => { if (l.misc) return; const k = l.name.toLowerCase(); oldQ[k] = (oldQ[k] || 0) + l.qty; });
-    newLines.forEach((l) => { if (l.misc) return; const k = l.name.toLowerCase(); newQ[k] = (newQ[k] || 0) + l.qty; });
+    // Misc / custom lines aren't inventory-backed, and service lines have no stock at all, so
+    // neither drives stock reconciliation. Both sides must filter identically — filtering one
+    // and not the other would book a phantom delta for every service on the bill.
+    const stockBacked = (l) => !l.misc && !isServiceLine(l);
+    editing.orig.forEach((l) => { if (!stockBacked(l)) return; const k = l.name.toLowerCase(); oldQ[k] = (oldQ[k] || 0) + l.qty; });
+    newLines.forEach((l) => { if (!stockBacked(l)) return; const k = l.name.toLowerCase(); newQ[k] = (newQ[k] || 0) + l.qty; });
     const deltas = {};
     [...new Set([...Object.keys(oldQ), ...Object.keys(newQ)])].forEach((k) => { const d = (newQ[k] || 0) - (oldQ[k] || 0); if (d) deltas[k] = d; });
     applyDeltas(deltas);
@@ -3399,7 +3731,12 @@ function SalesHistory({ sales, items, setSales, setItems, store = STORE, notify,
                 <div style={{ background: "#F4F7F4", borderRadius: 8, padding: "8px 12px", margin: "0 0 8px" }}>
                   {s.lines.map((l, i) => (
                     <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "3px 0" }}>
-                      <span>{l.name} × {l.qty}</span><span>{INR(l.amount)}</span>
+                      <span>
+                        {l.name} × {l.qty}
+                        {/* Who did the work — the first question asked of any past service bill. */}
+                        {isServiceLine(l) && l.staffId ? <span style={{ color: "#8A9C90" }}> · {staffName(staff, l.staffId)}</span> : null}
+                      </span>
+                      <span>{INR(l.amount)}</span>
                     </div>
                   ))}
                   {s.discount > 0 && (
@@ -3415,11 +3752,14 @@ function SalesHistory({ sales, items, setSales, setItems, store = STORE, notify,
                       </div>
                     </div>
                   )}
+                  {/* A biller reaches this view to REPRINT a receipt — that's why sales.view is
+                      theirs. Changing or erasing a bill that's already been rung up is an owner
+                      decision, and the database rules enforce the delete half of that too. */}
                   <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-                    <button className="btn small" onClick={() => printReceipt(s, store)}>🖨 Print</button>
-                    <button className="btn small ghost" onClick={() => openEdit(s)}>✎ Edit bill</button>
-                    <button className="btn small ghost" onClick={() => openSplit(s)}>✂ Split</button>
-                    <button className="btn small danger" onClick={() => deleteSale(s)}>🗑 Delete</button>
+                    <button className="btn small" onClick={() => printReceipt(s, store, staff)}>🖨 Print</button>
+                    {can(role, "sales.edit") && <button className="btn small ghost" onClick={() => openEdit(s)}>✎ Edit bill</button>}
+                    {can(role, "sales.edit") && <button className="btn small ghost" onClick={() => openSplit(s)}>✂ Split</button>}
+                    {can(role, "sales.delete") && <button className="btn small danger" onClick={() => deleteSale(s)}>🗑 Delete</button>}
                   </div>
                 </div>
               )}
@@ -5325,6 +5665,567 @@ function StoreConfig({ config, setConfig, notify, log, user, role }) {
       </section>
 
       {can(role, "users.manage") && <Users user={user} notify={notify} log={log} />}
+    </div>
+  );
+}
+
+// ---------- Customer editor (shared) ----------
+// Used by the Customers view and by the billing picker's quick-create, so a customer created
+// mid-bill is the same shape as one created deliberately — one form, one validation path.
+//
+// Phone is the key (shop/customers/<phone>), so it is only editable when creating. Changing it
+// later would mean re-keying the record and re-pointing every bill at the new key; the honest
+// answer is to create a new customer.
+function CustomerForm({ value, onChange, isNew, err }) {
+  const set = (k, v) => onChange({ ...value, [k]: v });
+  const year = todayStr().slice(0, 4);
+  return (
+    <>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <Field label="Phone">
+          {isNew ? (
+            <input className="input" type="tel" inputMode="numeric" autoFocus value={value.phone} onChange={(e) => set("phone", e.target.value)} />
+          ) : (
+            <input className="input" value={formatPhone(value.phone)} disabled title="Phone is the customer's key and can't be changed" />
+          )}
+        </Field>
+        <Field label="Name"><input className="input" autoFocus={!isNew} value={value.name} onChange={(e) => set("name", e.target.value)} /></Field>
+        <Field label="Gender">
+          <select className="input" value={value.gender || ""} onChange={(e) => set("gender", e.target.value)}>
+            <option value="">—</option>
+            <option value="F">Female</option>
+            <option value="M">Male</option>
+            <option value="O">Other</option>
+          </select>
+        </Field>
+        <div />
+        <Field label="Birthday">
+          <input
+            className="input" type="date"
+            value={fromDayMonth(value.dob, year)}
+            onChange={(e) => set("dob", toDayMonth(e.target.value))}
+          />
+        </Field>
+        <Field label="Anniversary">
+          <input
+            className="input" type="date"
+            value={fromDayMonth(value.anniversary, year)}
+            onChange={(e) => set("anniversary", toDayMonth(e.target.value))}
+          />
+        </Field>
+      </div>
+      <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: -4, marginBottom: 8 }}>
+        Only the day and month are kept — the year isn't stored, and isn't needed to send a wish.
+      </div>
+      <Field label="Notes">
+        <textarea className="input" rows={2} style={{ resize: "vertical" }} placeholder="e.g. prefers Priya · allergic to ammonia" value={value.notes || ""} onChange={(e) => set("notes", e.target.value)} />
+      </Field>
+      {err && <div style={{ color: "#B23B2E", fontSize: 12.5, marginTop: 8 }}>{err}</div>}
+    </>
+  );
+}
+
+// Validate a customer form. Phone is only checked on create — an existing record's key is
+// already normalised and locked.
+function validateCustomer(form, customers, isNew) {
+  if (isNew) {
+    if (!isValidPhone(form.phone)) return "Enter a valid 10-digit mobile number.";
+    const key = normalizePhone(form.phone);
+    if ((customers || []).some((c) => c.phone === key)) return "That number is already on the customer list.";
+  }
+  if (!String(form.name || "").trim()) return "Give the customer a name.";
+  if (form.dob && !isValidDayMonth(form.dob)) return "That birthday isn't a real date.";
+  if (form.anniversary && !isValidDayMonth(form.anniversary)) return "That anniversary isn't a real date.";
+  return null;
+}
+
+// Build a saveable customer record from a form.
+const makeCustomer = (form, { createdAt = "" } = {}) => {
+  const phone = normalizePhone(form.phone);
+  return {
+    ...blankCustomer(phone, form.createdAt || createdAt),
+    ...form,
+    id: phone,
+    phone,
+    name: String(form.name || "").trim(),
+    notes: String(form.notes || "").trim(),
+  };
+};
+
+// ---------- Customers (owner only) ----------
+// The customer database, and each customer's profile. A biller can look someone up to bill
+// them (the picker) but cannot browse this list — see roles.js: customers.pick vs
+// customers.browse. RTDB can't enforce that split, so it's a UI control; the README says so.
+function Customers({ customers, sales, services, staff, setCustomers, notify, log }) {
+  const [q, setQ] = useState("");
+  const [sort, setSort] = useState("recent");
+  const [editing, setEditing] = useState(null); // phone | "new"
+  const [form, setForm] = useState(blankCustomer());
+  const [err, setErr] = useState("");
+  const [profile, setProfile] = useState(null); // phone whose profile is open
+
+  const listed = useMemo(() => {
+    const query = q.trim().toLowerCase();
+    const digits = query.replace(/\D+/g, "");
+    const rows = customers.filter((c) =>
+      !query ||
+      String(c.name || "").toLowerCase().includes(query) ||
+      (digits && String(c.phone || "").includes(digits))
+    );
+    const cmp = {
+      recent: (a, b) => String(b.lastVisitAt || "").localeCompare(String(a.lastVisitAt || "")),
+      spend: (a, b) => (b.totalSpend || 0) - (a.totalSpend || 0),
+      visits: (a, b) => (b.totalVisits || 0) - (a.totalVisits || 0),
+      name: (a, b) => String(a.name || "").localeCompare(String(b.name || "")),
+    }[sort];
+    return [...rows].sort(cmp);
+  }, [customers, q, sort]);
+
+  const startNew = () => { setForm(blankCustomer("", todayStr())); setEditing("new"); setErr(""); };
+  const startEdit = (c) => { setForm({ ...c }); setEditing(c.phone); setErr(""); };
+  const close = () => { setEditing(null); setErr(""); };
+
+  const save = () => {
+    const isNew = editing === "new";
+    const problem = validateCustomer(form, customers, isNew);
+    if (problem) return setErr(problem);
+    const rec = makeCustomer(form, { createdAt: todayStr() });
+    setCustomers((list) => (isNew ? [...list, rec] : list.map((c) => (c.phone === editing ? { ...c, ...rec } : c))));
+    log("settings", `${isNew ? "Added" : "Updated"} customer — ${rec.name} · ${formatPhone(rec.phone)}`);
+    notify(`✓ ${rec.name} saved`);
+    close();
+  };
+
+  // Deleting a customer does NOT touch their bills — the money stays on the books. It only
+  // drops the profile, so the bills become walk-ins that still reference a phone nobody has a
+  // record for. That's why this asks so explicitly.
+  const remove = (c) => {
+    const bills = billsForCustomer(sales, c.phone).length;
+    const msg = bills
+      ? `Delete ${c.name}'s profile? Their ${bills} bill(s) stay on the books and keep counting towards revenue — only the customer record, notes and occasion dates are removed.`
+      : `Delete ${c.name}'s profile?`;
+    if (!confirm(msg)) return;
+    setCustomers((list) => list.filter((x) => x.phone !== c.phone));
+    log("settings", `Deleted customer — ${c.name} · ${formatPhone(c.phone)}`);
+    notify(`${c.name} removed`);
+    if (profile === c.phone) setProfile(null);
+  };
+
+  const openProfile = customers.find((c) => c.phone === profile);
+
+  return (
+    <div>
+      <Header title="Customers" sub={`${customers.length} on the books`}>
+        <button className="btn primary big" onClick={startNew}>+ New customer</button>
+      </Header>
+
+      <section style={{ ...S.panel, marginBottom: 14 }}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <input className="input" style={{ flex: "1 1 220px" }} placeholder="Search by name or phone…" value={q} onChange={(e) => setQ(e.target.value)} />
+          <select className="input" style={{ width: "auto" }} value={sort} onChange={(e) => setSort(e.target.value)}>
+            <option value="recent">Most recent visit</option>
+            <option value="spend">Highest spend</option>
+            <option value="visits">Most visits</option>
+            <option value="name">Name (A–Z)</option>
+          </select>
+        </div>
+      </section>
+
+      {listed.length === 0 ? (
+        <Empty text={customers.length ? "No customers match." : "No customers yet — they're created as you bill them."} />
+      ) : (
+        <section style={S.panel}>
+          <div style={{ overflowX: "auto" }}>
+            <table className="tbl" style={{ width: "100%" }}>
+              <thead>
+                <tr>
+                  <th>Name</th><th>Phone</th>
+                  <th style={{ textAlign: "right" }}>Visits</th>
+                  <th style={{ textAlign: "right" }}>Spend</th>
+                  <th>Last visit</th><th />
+                </tr>
+              </thead>
+              <tbody>
+                {listed.map((c) => (
+                  <tr key={c.phone}>
+                    <td>
+                      <button
+                        onClick={() => setProfile(c.phone)}
+                        style={{ background: "none", border: "none", padding: 0, font: "inherit", fontWeight: 600, color: "#1B5E43", cursor: "pointer", textAlign: "left" }}
+                      >
+                        {c.name || "(no name)"}
+                      </button>
+                    </td>
+                    <td style={{ whiteSpace: "nowrap" }}>{formatPhone(c.phone)}</td>
+                    <td style={{ textAlign: "right" }}>{c.totalVisits || 0}</td>
+                    <td style={{ textAlign: "right", fontWeight: 600 }}>{INR(c.totalSpend || 0)}</td>
+                    <td style={{ whiteSpace: "nowrap", color: c.lastVisitAt ? "#334" : "#A8B8AE" }}>{c.lastVisitAt || "never"}</td>
+                    <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                      <button className="btn ghost" style={{ fontSize: 12 }} onClick={() => startEdit(c)}>Edit</button>{" "}
+                      <button className="btn ghost" style={{ fontSize: 12, color: "#C44536" }} onClick={() => remove(c)}>Delete</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {editing && (
+        <Modal title={editing === "new" ? "New customer" : "Edit customer"} onClose={close}>
+          <CustomerForm value={form} onChange={setForm} isNew={editing === "new"} err={err} />
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 14 }}>
+            <button className="btn" onClick={close}>Cancel</button>
+            <button className="btn primary" onClick={save}>Save customer</button>
+          </div>
+        </Modal>
+      )}
+
+      {openProfile && (
+        <CustomerProfile
+          customer={openProfile} sales={sales} services={services} staff={staff}
+          onClose={() => setProfile(null)} onEdit={() => { setProfile(null); startEdit(openProfile); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------- Customer profile ----------
+// Phase 1 shows who they are and every bill they've had. Phase 3 adds the points ledger,
+// packages and next-due services; Phase 4 adds their segment.
+function CustomerProfile({ customer, sales, staff, onClose, onEdit }) {
+  const bills = useMemo(() => billsForCustomer(sales, customer.phone).slice().reverse(), [sales, customer.phone]);
+  const avg = customer.totalVisits ? money(customer.totalSpend / customer.totalVisits) : 0;
+
+  return (
+    <Modal title={customer.name || formatPhone(customer.phone)} onClose={onClose}>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+        <Card label="Visits" value={customer.totalVisits || 0} />
+        <Card label="Total spend" value={INR(customer.totalSpend || 0)} accent />
+        <Card label="Average bill" value={INR(avg)} />
+        <Card label="Last visit" value={customer.lastVisitAt || "never"} />
+      </div>
+
+      <div style={{ fontSize: 12.5, color: "#5E7468", lineHeight: 1.8, marginBottom: 12 }}>
+        <div>☎ {formatPhone(customer.phone)}</div>
+        {customer.dob && <div>🎂 Birthday · {customer.dob.replace("-", " / ")}</div>}
+        {customer.anniversary && <div>💐 Anniversary · {customer.anniversary.replace("-", " / ")}</div>}
+        {customer.notes && <div style={{ marginTop: 6, whiteSpace: "pre-line", color: "#334" }}>📝 {customer.notes}</div>}
+      </div>
+
+      <div style={{ ...S.panelHead, marginTop: 4 }}>Visit history</div>
+      {bills.length === 0 ? (
+        <Empty text="No bills yet." />
+      ) : (
+        <div style={{ maxHeight: 260, overflowY: "auto" }}>
+          <table className="tbl" style={{ width: "100%" }}>
+            <thead><tr><th>Date</th><th>What they had</th><th style={{ textAlign: "right" }}>Paid</th></tr></thead>
+            <tbody>
+              {bills.map((b) => (
+                <tr key={b.id}>
+                  <td style={{ whiteSpace: "nowrap" }}>{b.date}</td>
+                  <td style={{ fontSize: 12.5 }}>
+                    {(b.lines || []).map((l, i) => (
+                      <div key={i} style={{ color: isServiceLine(l) ? "#334" : "#6B7E74" }}>
+                        {l.name}
+                        {l.qty > 1 ? ` ×${l.qty}` : ""}
+                        {isServiceLine(l) && l.staffId ? <span style={{ color: "#8A9C90" }}> · {staffName(staff, l.staffId)}</span> : null}
+                      </div>
+                    ))}
+                  </td>
+                  <td style={{ textAlign: "right", fontWeight: 600, whiteSpace: "nowrap" }}>{INR(b.total)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 14 }}>
+        <button className="btn" onClick={onClose}>Close</button>
+        <button className="btn primary" onClick={onEdit}>Edit customer</button>
+      </div>
+    </Modal>
+  );
+}
+
+// ---------- Services (owner only) ----------
+// The salon's menu: what it sells, how long each thing takes, what it pays the person doing
+// it, and how soon the customer is due back. Those last two are why this can't just be the
+// Inventory screen with different labels — a service has no stock, but it does have a
+// commission rate and a rebooking cycle that the Reminders queue reads.
+function Services({ services, setServices, notify, log }) {
+  const [q, setQ] = useState("");
+  const [cat, setCat] = useState("All");
+  const [showInactive, setShowInactive] = useState(false);
+  const [editing, setEditing] = useState(null); // service id | "new"
+  const [form, setForm] = useState(blankService());
+  const [err, setErr] = useState("");
+
+  const filtered = useMemo(() => {
+    const query = q.trim().toLowerCase();
+    return services.filter((s) =>
+      (showInactive || s.active !== false) &&
+      (cat === "All" || s.category === cat) &&
+      (!query || String(s.name || "").toLowerCase().includes(query))
+    );
+  }, [services, q, cat, showInactive]);
+
+  const grouped = useMemo(() => {
+    const m = new Map();
+    filtered.forEach((s) => {
+      const k = s.category || "Other";
+      if (!m.has(k)) m.set(k, []);
+      m.get(k).push(s);
+    });
+    return [...m.entries()];
+  }, [filtered]);
+
+  const startNew = () => { setForm(blankService(todayStr())); setEditing("new"); setErr(""); };
+  const startEdit = (s) => { setForm({ ...s }); setEditing(s.id); setErr(""); };
+  const close = () => { setEditing(null); setErr(""); };
+
+  const save = () => {
+    const problem = validateService(form);
+    if (problem) return setErr(problem);
+    const isNew = editing === "new";
+    const rec = makeService(form, { id: isNew ? uid() : editing, createdAt: form.createdAt || todayStr() });
+    setServices((list) => (isNew ? [...list, rec] : list.map((s) => (s.id === editing ? rec : s))));
+    log("settings", `${isNew ? "Added" : "Updated"} service — ${rec.name} · ${INR(rec.price)}`);
+    notify(`✓ ${rec.name} saved`);
+    close();
+  };
+
+  // Deactivate rather than delete: a deleted service would orphan every past bill line and
+  // commission report that references it. Deactivating takes it off the billing screen while
+  // leaving history readable.
+  const toggleActive = (s) => {
+    const next = s.active === false;
+    if (!next && !confirm(`Take “${s.name}” off the menu? Past bills keep it; it just stops appearing when billing.`)) return;
+    setServices((list) => list.map((x) => (x.id === s.id ? { ...x, active: next } : x)));
+    log("settings", `${next ? "Re-activated" : "Deactivated"} service — ${s.name}`);
+    notify(next ? `${s.name} is back on the menu` : `${s.name} taken off the menu`);
+  };
+
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+
+  return (
+    <div>
+      <Header title="Services" sub={`${activeServices(services).length} on the menu · prices, durations, commission and rebooking cycles`}>
+        <button className="btn primary big" onClick={startNew}>+ New service</button>
+      </Header>
+
+      <section style={{ ...S.panel, marginBottom: 14 }}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <input className="input" style={{ flex: "1 1 200px" }} placeholder="Search services…" value={q} onChange={(e) => setQ(e.target.value)} />
+          <select className="input" style={{ width: "auto" }} value={cat} onChange={(e) => setCat(e.target.value)}>
+            <option value="All">All categories</option>
+            {SERVICE_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <label style={{ fontSize: 12.5, color: "#6B7E74", display: "flex", alignItems: "center", gap: 6 }}>
+            <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
+            Show inactive
+          </label>
+        </div>
+      </section>
+
+      {grouped.length === 0 ? (
+        <Empty text="No services match." />
+      ) : grouped.map(([category, list]) => (
+        <section key={category} style={{ ...S.panel, marginBottom: 14 }}>
+          <div style={S.panelHead}>{serviceIconFor(category)} {category} <span style={{ fontWeight: 400, color: "#8A9C90" }}>· {list.length}</span></div>
+          <div style={{ overflowX: "auto" }}>
+            <table className="tbl" style={{ width: "100%" }}>
+              <thead>
+                <tr><th>Service</th><th style={{ textAlign: "right" }}>Price</th><th style={{ textAlign: "right" }}>Time</th><th style={{ textAlign: "right" }}>Commission</th><th style={{ textAlign: "right" }}>Rebook</th><th /></tr>
+              </thead>
+              <tbody>
+                {list.map((s) => (
+                  <tr key={s.id} style={s.active === false ? { opacity: 0.5 } : undefined}>
+                    <td>
+                      {s.name}
+                      {s.active === false && <span style={{ fontSize: 11, color: "#C44536" }}> · off menu</span>}
+                    </td>
+                    <td style={{ textAlign: "right", fontWeight: 600 }}>{INR(s.price)}</td>
+                    <td style={{ textAlign: "right" }}>{s.durationMin} min</td>
+                    <td style={{ textAlign: "right" }}>{s.commissionPct}%</td>
+                    <td style={{ textAlign: "right", color: s.rebookCycleDays ? "#334" : "#A8B8AE" }}>
+                      {s.rebookCycleDays ? `${s.rebookCycleDays} d` : "—"}
+                    </td>
+                    <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                      <button className="btn ghost" style={{ fontSize: 12 }} onClick={() => startEdit(s)}>Edit</button>{" "}
+                      <button className="btn ghost" style={{ fontSize: 12 }} onClick={() => toggleActive(s)}>
+                        {s.active === false ? "Restore" : "Remove"}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ))}
+
+      {editing && (
+        <Modal title={editing === "new" ? "New service" : "Edit service"} onClose={close}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div style={{ gridColumn: "1 / -1" }}>
+              <Field label="Name"><input className="input" autoFocus value={form.name} onChange={(e) => set("name", e.target.value)} /></Field>
+            </div>
+            <Field label="Category">
+              <select className="input" value={form.category} onChange={(e) => { set("category", e.target.value); set("icon", serviceIconFor(e.target.value)); }}>
+                {SERVICE_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </Field>
+            <Field label="Price (₹)"><input className="input" inputMode="decimal" value={form.price} onChange={(e) => set("price", e.target.value)} /></Field>
+            <Field label="Duration (minutes)">
+              <input className="input" inputMode="numeric" step={5} type="number" value={form.durationMin} onChange={(e) => set("durationMin", e.target.value)} />
+            </Field>
+            <Field label="Commission %"><input className="input" inputMode="decimal" value={form.commissionPct} onChange={(e) => set("commissionPct", e.target.value)} /></Field>
+            <div style={{ gridColumn: "1 / -1" }}>
+              <Field label="Rebooking cycle (days)">
+                <input className="input" inputMode="numeric" value={form.rebookCycleDays} onChange={(e) => set("rebookCycleDays", e.target.value)} />
+              </Field>
+              <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: -4 }}>
+                How long until the customer is typically due again — this drives the Reminders queue.
+                Use <b>0</b> for one-off work like bridal makeup, which should never prompt a reminder.
+              </div>
+            </div>
+          </div>
+          {err && <div style={{ color: "#B23B2E", fontSize: 12.5, marginTop: 10 }}>{err}</div>}
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 14 }}>
+            <button className="btn" onClick={close}>Cancel</button>
+            <button className="btn primary" onClick={save}>Save service</button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ---------- Staff (owner only) ----------
+// Who works here, what colour they are on the appointment grid, and what they earn by default.
+// Phase 5 builds payout reports and performance charts on top of this.
+function Staff({ staff, setStaff, notify, log }) {
+  const [showInactive, setShowInactive] = useState(false);
+  const [editing, setEditing] = useState(null); // staff id | "new"
+  const [form, setForm] = useState(blankStaff());
+  const [err, setErr] = useState("");
+
+  const listed = useMemo(
+    () => staff.filter((s) => showInactive || s.active !== false),
+    [staff, showInactive]
+  );
+
+  const startNew = () => { setForm(blankStaff(staff, todayStr())); setEditing("new"); setErr(""); };
+  const startEdit = (s) => { setForm({ ...s }); setEditing(s.id); setErr(""); };
+  const close = () => { setEditing(null); setErr(""); };
+
+  const save = () => {
+    const problem = validateStaff(form);
+    if (problem) return setErr(problem);
+    const isNew = editing === "new";
+    const rec = makeStaff(form, { id: isNew ? uid() : editing, createdAt: form.createdAt || todayStr() });
+    setStaff((list) => (isNew ? [...list, rec] : list.map((s) => (s.id === editing ? rec : s))));
+    log("settings", `${isNew ? "Added" : "Updated"} staff — ${rec.name}`);
+    notify(`✓ ${rec.name} saved`);
+    close();
+  };
+
+  // Deactivate, never delete: past bills and appointments carry a staffId, and deleting the
+  // record would leave every one of them attributed to nobody.
+  const toggleActive = (s) => {
+    const next = s.active === false;
+    if (!next && !confirm(`Mark ${s.name} as no longer working here? Their past bills and commission history stay intact.`)) return;
+    setStaff((list) => list.map((x) => (x.id === s.id ? { ...x, active: next } : x)));
+    log("settings", `${next ? "Re-activated" : "Deactivated"} staff — ${s.name}`);
+    notify(next ? `${s.name} re-activated` : `${s.name} deactivated`);
+  };
+
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+
+  return (
+    <div>
+      <Header title="Staff" sub={`${activeStaff(staff).length} working · colours, roles and default commission`}>
+        <button className="btn primary big" onClick={startNew}>+ Add staff</button>
+      </Header>
+
+      <section style={{ ...S.panel, marginBottom: 14 }}>
+        <label style={{ fontSize: 12.5, color: "#6B7E74", display: "flex", alignItems: "center", gap: 6 }}>
+          <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
+          Show people who no longer work here
+        </label>
+      </section>
+
+      {listed.length === 0 ? (
+        <Empty text="No staff yet.">
+          <button className="btn primary" onClick={startNew}>Add the first stylist</button>
+        </Empty>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 12 }}>
+          {listed.map((s) => (
+            <section key={s.id} style={{ ...S.panel, opacity: s.active === false ? 0.55 : 1, borderTop: `3px solid ${s.color}` }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ width: 34, height: 34, borderRadius: "50%", background: s.color, color: "#fff", display: "grid", placeItems: "center", fontWeight: 800, flexShrink: 0 }}>
+                  {String(s.name || "?").trim().charAt(0).toUpperCase()}
+                </span>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 700, fontSize: 14.5 }}>{s.name}</div>
+                  <div style={{ fontSize: 12, color: "#6B7E74" }}>{s.role || "—"}</div>
+                </div>
+              </div>
+              <div style={{ fontSize: 12.5, color: "#5E7468", marginTop: 10, lineHeight: 1.7 }}>
+                <div>Default commission · <b>{s.commissionPctDefault}%</b></div>
+                {s.phone && <div>☎ {formatPhone(s.phone)}</div>}
+                {s.active === false && <div style={{ color: "#C44536", fontWeight: 600 }}>No longer working here</div>}
+              </div>
+              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                <button className="btn ghost" style={{ fontSize: 12 }} onClick={() => startEdit(s)}>Edit</button>
+                <button className="btn ghost" style={{ fontSize: 12 }} onClick={() => toggleActive(s)}>
+                  {s.active === false ? "Re-activate" : "Deactivate"}
+                </button>
+              </div>
+            </section>
+          ))}
+        </div>
+      )}
+
+      {editing && (
+        <Modal title={editing === "new" ? "Add staff" : "Edit staff"} onClose={close}>
+          <Field label="Name"><input className="input" autoFocus value={form.name} onChange={(e) => set("name", e.target.value)} /></Field>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="Role"><input className="input" placeholder="e.g. Hair Stylist" value={form.role} onChange={(e) => set("role", e.target.value)} /></Field>
+            <Field label="Phone"><input className="input" type="tel" value={form.phone} onChange={(e) => set("phone", e.target.value)} /></Field>
+          </div>
+          <Field label="Default commission %">
+            <input className="input" inputMode="decimal" value={form.commissionPctDefault} onChange={(e) => set("commissionPctDefault", e.target.value)} />
+          </Field>
+          <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: -6, marginBottom: 10 }}>
+            Used when a service doesn't set its own commission rate.
+          </div>
+          <Field label="Colour on the appointment grid">
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {STAFF_COLORS.map((c) => (
+                <button
+                  key={c} type="button" onClick={() => set("color", c)}
+                  aria-label={`Colour ${c}`}
+                  style={{
+                    width: 28, height: 28, borderRadius: "50%", background: c, cursor: "pointer",
+                    border: String(form.color).toLowerCase() === c.toLowerCase() ? "3px solid #334" : "1px solid #DDE5DF",
+                  }}
+                />
+              ))}
+            </div>
+          </Field>
+          {err && <div style={{ color: "#B23B2E", fontSize: 12.5, marginTop: 10 }}>{err}</div>}
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 14 }}>
+            <button className="btn" onClick={close}>Cancel</button>
+            <button className="btn primary" onClick={save}>Save</button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
