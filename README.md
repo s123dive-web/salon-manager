@@ -64,6 +64,7 @@ Salon Manager is **multi-user**. The owner manages staff accounts from inside th
 | Finance, Stats | ✅ | — | — |
 | Expenses, Vendor Bills, Udhari ledger | ✅ | — | — |
 | Services, Staff, Packages, Loyalty config | ✅ | — | — |
+| Redeem a customer's points / package at the till | ✅ | ✅ | ✅ |
 | Staff commissions & payout reports | ✅ | — | — |
 | Reminders / campaigns | ✅ | — | — |
 | Settings, Users, Activity Log | ✅ | — | — |
@@ -201,6 +202,7 @@ tested data (no clock, no randomness).
 | [`customers.js`](src/lib/customers.js) | phone normalisation (the customer key) + drift-free visit/spend stats | ✅ |
 | [`salon.js`](src/lib/salon.js) | service/staff validation, commission rate resolution, bill-line types | ✅ |
 | [`appointments.js`](src/lib/appointments.js) | the overlap check, grid layout, booking validation | ✅ |
+| [`loyalty.js`](src/lib/loyalty.js) | points maths, tiers, prepaid packages | ✅ |
 | [`stats.js`](src/lib/stats.js) | revenue/profit series, heatmaps, break-even, salon analytics | ✅ |
 | [`parse.js`](src/lib/parse.js) | tolerant import parser (txt/csv/tsv/xls/xlsx/pdf/json) | ✅ |
 | [`backup.js`](src/lib/backup.js) | JSON/XLSX backup & restore | ✅ |
@@ -215,6 +217,28 @@ not ship the Daily-Need Bills view. A salon's consumable purchases go through **
 
 Money is handled in **paise-rounded rupees** and dates in the **local timezone**, using the
 helpers the grocery app already hardened — don't reintroduce bugs those fixed.
+
+### Nothing that matters is a running total
+
+Customer visit counts, total spend, loyalty points, tier and package sessions are all
+**derived from the bills** and recomputed, never incremented.
+
+This is the single most important invariant in the app. An incremented counter drifts the first
+time a bill is deleted, edited on another device, or merged twice — and each of those drifts is
+a real argument at the counter: a points balance nobody can adjudicate, a package session
+either given away twice or refused to someone entitled to it. Deriving them means **the
+delete-reversal is automatic — there is no reversal code to forget.**
+
+The cost is one pass over an in-memory array; the reconcilers return the *same array reference*
+when nothing changed, so they settle in one pass rather than writing to the cloud on every
+render. `Admin → recompute` re-runs them all if data is ever imported from outside the app.
+
+Two knowing simplifications, both in [`loyalty.js`](src/lib/loyalty.js):
+
+- Points are earned on what the customer actually **pays** (after a points redemption), not on
+  the pre-redemption total — otherwise points would earn points.
+- A package covers **one session per bill line**. Adding a second of the same service to one
+  bill bumps the quantity at the package's zero price rather than drawing a second session.
 
 ### The appointment diary
 

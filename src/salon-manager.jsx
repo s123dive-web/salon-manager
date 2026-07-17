@@ -28,7 +28,7 @@ import {
   reconcileCustomers, billsForCustomer, toDayMonth, fromDayMonth, isValidDayMonth,
 } from "./lib/customers.js";
 import {
-  blankService, validateService, makeService, activeServices,
+  blankService, validateService, makeService, activeServices, serviceById,
   blankStaff, validateStaff, makeStaff, activeStaff, staffById, staffName,
   serviceToCartLine, isServiceLine, STAFF_COLORS,
 } from "./lib/salon.js";
@@ -42,6 +42,12 @@ import {
   validateAppointment, summarizeServices, blankAppointment, dayAppointments,
   layoutDay, weekStrip, addDays, dayStats,
 } from "./lib/appointments.js";
+import {
+  TIER_COLORS, loyaltyRules, pointsForSpend, maxRedeemablePoints, redeemValueOf,
+  pointsBalance, pointsLedger, rollingSpend, tierFor, nextTierGap, reconcileLoyalty,
+  blankPackage, validatePackage, makePackage, activePackages,
+  sellPackage, redeemablePackages, packageCovering, daysBetweenISO, reconcilePackages,
+} from "./lib/loyalty.js";
 import { uploadBillProof, deleteBillProof, PROOF_ACCEPT, MAX_PROOF_BYTES } from "./lib/bills.js";
 // NOTE: src/lib/dailyBills.js (and its test suite) is carried over intact from the grocery core,
 // but Salon Manager does not ship the Daily-Need Bills section — a salon's consumable purchases
@@ -733,6 +739,7 @@ const TOP_TABS = [
 ];
 const OTHER_TABS = [
   ["services", "✂", "Services", "services.manage"],
+  ["packages", "🎁", "Packages", "packages.manage"],
   ["staff", "🧑‍🎨", "Staff", "staff.manage"],
   ["alerts", "⚠", "Alerts", "alerts.view"],
   ["vendorbills", "🧾", "Vendor Bills", "vendorBills.manage"],
@@ -1081,10 +1088,22 @@ function StoreManager({ user, role, onLogout }) {
   //
   // reconcileCustomers returns the same array reference when nothing changed, so this settles
   // after one pass instead of pushing a write to the cloud on every render.
+  // Both reconcilers return the SAME array reference when nothing changed, so this settles
+  // after one pass instead of looping. Loyalty is folded in here rather than in its own effect
+  // because points and spend are both functions of the same bills — running them apart would
+  // mean two renders and two cloud writes for one change.
   useEffect(() => {
     if (!loaded || !synced.current.customers || !synced.current.sales) return;
-    setCustomers((cs) => reconcileCustomers(cs, sales));
-  }, [sales, customers, loaded]);
+    setCustomers((cs) => reconcileLoyalty(reconcileCustomers(cs, sales), sales, config, todayStr()));
+  }, [sales, customers, config, loaded]);
+
+  // Package sessions are derived from the bills too, for exactly the same reason: a stored
+  // counter drifts, and a drifted package balance means either turning away a customer with
+  // sessions left or giving away work they already used.
+  useEffect(() => {
+    if (!loaded || !synced.current.customerPackages || !synced.current.sales) return;
+    setCustomerPackages((cps) => reconcilePackages(cps, sales));
+  }, [sales, customerPackages, loaded]);
 
   // "Complete → Bill": hand an appointment to the POS pre-filled with its customer, its
   // services and who performed them, then link the two together once the bill is saved.
@@ -1164,9 +1183,10 @@ function StoreManager({ user, role, onLogout }) {
   const VIEWS = {
     dashboard: () => dashboard,
     appointments: () => guard("appointments.view", <Appointments appointments={appointments} setAppointments={setAppointments} customers={customers} setCustomers={setCustomers} services={services} staff={staff} config={config} notify={notify} log={addLog} role={role} onCompleteToBill={completeToBill} />),
-    billing: () => guard("billing.use", <Billing items={items} sales={sales} services={services} staff={staff} customers={customers} setItems={setItems} setSales={setSales} setCustomers={setCustomers} store={store} notify={notify} log={addLog} role={role} user={user} prefill={billPrefill} onPrefillUsed={() => setBillPrefill(null)} onBilled={linkBillToAppointment} />),
-    customers: () => guard("customers.browse", <Customers customers={customers} sales={sales} services={services} staff={staff} setCustomers={setCustomers} notify={notify} log={addLog} />),
+    billing: () => guard("billing.use", <Billing items={items} sales={sales} services={services} staff={staff} customers={customers} customerPackages={customerPackages} config={config} setItems={setItems} setSales={setSales} setCustomers={setCustomers} store={store} notify={notify} log={addLog} role={role} user={user} prefill={billPrefill} onPrefillUsed={() => setBillPrefill(null)} onBilled={linkBillToAppointment} />),
+    customers: () => guard("customers.browse", <Customers customers={customers} sales={sales} services={services} staff={staff} customerPackages={customerPackages} config={config} setCustomers={setCustomers} notify={notify} log={addLog} />),
     services: () => guard("services.manage", <Services services={services} setServices={setServices} notify={notify} log={addLog} />),
+    packages: () => guard("packages.manage", <Packages packages={packages} setPackages={setPackages} customerPackages={customerPackages} setCustomerPackages={setCustomerPackages} services={services} customers={customers} setCustomers={setCustomers} setSales={setSales} notify={notify} log={addLog} />),
     staff: () => guard("staff.manage", <Staff staff={staff} setStaff={setStaff} notify={notify} log={addLog} />),
     raw: () => guard("import.use", <RawData items={items} setItems={setItems} setSales={setSales} setExpenses={setExpenses} notify={notify} log={addLog} />),
     inventory: () => guard("inventory.view", <Inventory items={items} setItems={setItems} notify={notify} log={addLog} cats={cats} onAddCategory={addCategory} role={role} />),
@@ -1702,10 +1722,18 @@ function CustomerPicker({ customers, value, onPick, onCreate, notify }) {
           {String(picked.name || "?").trim().charAt(0).toUpperCase()}
         </span>
         <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ fontWeight: 700, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{picked.name}</div>
+          <div style={{ fontWeight: 700, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {picked.name}
+            {picked.tier && (
+              <span style={{ background: TIER_COLORS[picked.tier], color: "#fff", fontWeight: 800, fontSize: 9, padding: "1px 5px", borderRadius: 999, marginLeft: 5, letterSpacing: ".04em" }}>
+                {picked.tier.toUpperCase()}
+              </span>
+            )}
+          </div>
           <div style={{ fontSize: 11.5, color: "#6B7E74" }}>
             {formatPhone(picked.phone)}
             {picked.totalVisits ? ` · ${picked.totalVisits} visit${picked.totalVisits > 1 ? "s" : ""}` : " · first visit"}
+            {picked.loyaltyPoints > 0 ? ` · ${picked.loyaltyPoints} pts` : ""}
           </div>
         </div>
         <button className="btn ghost" style={{ fontSize: 12 }} onClick={() => onPick("")}>Change</button>
@@ -1771,7 +1799,9 @@ function CustomerPicker({ customers, value, onPick, onCreate, notify }) {
 }
 
 // ---------- Billing / POS ----------
-function Billing({ items, sales, services, staff, customers, setItems, setSales, setCustomers, store = STORE, notify, log, role, user, prefill, onPrefillUsed, onBilled }) {
+// Note: Billing reads customerPackages but never writes them. Drawing a session down IS
+// recording packageRedemptions on the bill; the shell derives usesLeft from that.
+function Billing({ items, sales, services, staff, customers, customerPackages, config, setItems, setSales, setCustomers, store = STORE, notify, log, role, user, prefill, onPrefillUsed, onBilled }) {
   const [q, setQ] = useState("");
   const [cart, setCart] = useState([]); // {id, lineType, name, icon, unit, sellPrice, buyPrice, qty, staffId?}
   const [lastSale, setLastSale] = useState(null);
@@ -1790,6 +1820,9 @@ function Billing({ items, sales, services, staff, customers, setItems, setSales,
   const [lineStaff, setLineStaff] = useState("");
   // The appointment this bill closes, when we arrived here via "Complete → Bill".
   const [fromAppointment, setFromAppointment] = useState("");
+  // Points the customer is spending on this bill. Kept as a string so the field can be
+  // cleared; coerced and re-clamped against the live ceiling on every use.
+  const [redeemPts, setRedeemPts] = useState("");
   const [paidNow, setPaidNow] = useState(""); // Udhari part-payment taken at billing time
   const [paidMode, setPaidMode] = useState("Cash"); // how that part-payment was received (UPI/Cash)
   const [discount, setDiscount] = useState(""); // optional extra discount on the whole bill
@@ -1941,12 +1974,26 @@ function Billing({ items, sales, services, staff, customers, setItems, setSales,
   // Put a service on the bill, attributed to whoever is currently selected. Unlike a product
   // there is no stock to check — labour doesn't run out — and repeating a service (a second
   // threading, say) just bumps the quantity.
-  const addService = (service) => setCart((cart) => {
-    const ex = cart.find((c) => c.id === service.id);
-    return ex
-      ? cart.map((c) => (c.id === service.id ? { ...c, qty: c.qty + 1 } : c))
-      : [...cart, serviceToCartLine(service, lineStaff)];
-  });
+  //
+  // If the customer has a package covering this service, the line goes on at ZERO price and
+  // draws a session down. They already paid for it when they bought the package; charging
+  // again would be charging twice for the same work.
+  const addService = (service) => {
+    const covering = picked ? packageCovering(customerPackages, picked.phone, service.id, saleDate) : null;
+    setCart((cart) => {
+      const ex = cart.find((c) => c.id === service.id);
+      if (ex) return cart.map((c) => (c.id === service.id ? { ...c, qty: c.qty + 1 } : c));
+      const line = serviceToCartLine(service, lineStaff);
+      if (!covering) return [...cart, line];
+      // Only one session per line: a package draw-down is qty 1 by definition. If they want a
+      // second of the same service on one bill, the qty bump above leaves it at the package
+      // price — which is a knowing simplification, noted in the README.
+      return [...cart, { ...line, sellPrice: 0, fromPackageId: covering.id, packageName: covering.name }];
+    });
+    if (covering) {
+      notify(`Covered by “${covering.name}” — ${covering.usesLeft - 1} session(s) will be left`);
+    }
+  };
 
   // Re-attribute one service line. Sittings do get split — a colour by one stylist, the
   // blow-dry by another — and commission has to follow the person who actually did the work.
@@ -2064,8 +2111,28 @@ function Billing({ items, sales, services, staff, customers, setItems, setSales,
   // book the amount actually charged without any downstream change.
   const discNum = Math.max(0, +discount || 0);
   const discountAmt = discMode === "%" ? money(subtotal * Math.min(100, discNum) / 100) : Math.min(subtotal, money(discNum));
-  const total = money(subtotal - discountAmt);
-  const profit = money(grossProfit - discountAmt);
+  const afterDiscount = money(subtotal - discountAmt);
+
+  // ---- loyalty redemption ----
+  // Points come off AFTER the manual discount, against what's actually left owing. Applying
+  // them to the pre-discount subtotal would let a discounted bill be over-paid with points.
+  const rules = useMemo(() => loyaltyRules(config), [config]);
+  const ptsBalance = useMemo(() => (picked ? pointsBalance(picked.phone, sales) : 0), [picked, sales]);
+  const maxPts = useMemo(
+    () => (picked ? maxRedeemablePoints(ptsBalance, afterDiscount, rules) : 0),
+    [picked, ptsBalance, afterDiscount, rules]
+  );
+  // Re-clamp on every render: the ceiling moves as lines are added or removed, and a number
+  // typed when the bill was ₹3000 must not survive the bill dropping to ₹300.
+  const redeemedPts = Math.max(0, Math.min(maxPts, Math.floor(+redeemPts || 0)));
+  const redeemAmt = redeemValueOf(redeemedPts, rules);
+
+  const total = money(afterDiscount - redeemAmt);
+  // Points are a discount the salon funds, so like any discount they come straight off profit.
+  const profit = money(grossProfit - discountAmt - redeemAmt);
+  // What this bill will earn. Earned on what the customer actually PAYS: earning points on the
+  // part settled with points would be paying interest on its own currency.
+  const willEarn = useMemo(() => (picked ? pointsForSpend(total, rules) : 0), [picked, total, rules]);
 
   const completeSale = () => {
     if (cart.length === 0) return;
@@ -2084,6 +2151,20 @@ function Billing({ items, sales, services, staff, customers, setItems, setSales,
       const { c, stock } = short[0];
       return notify(`Only ${stock} ${c.unit} of ${c.name} left — adjust the bill.`);
     }
+    // Package sessions this bill draws down — one per covered line, recorded on the bill so a
+    // delete can hand them back. Re-checked here rather than trusted from the cart: the cart may
+    // have been sitting open while the same package was spent on another device.
+    const packageDraws = [];
+    for (const c of cart) {
+      if (!c.fromPackageId) continue;
+      const cp = customerPackages.find((x) => x.id === c.fromPackageId);
+      const drawnSoFar = packageDraws.filter((d) => d.customerPackageId === c.fromPackageId).length;
+      if (!cp || cp.usesLeft - drawnSoFar <= 0) {
+        return notify(`“${c.packageName || "That package"}” has no sessions left — remove ${c.name} or re-add it at full price.`);
+      }
+      packageDraws.push({ customerPackageId: c.fromPackageId, serviceId: c.id, serviceName: c.name });
+    }
+
     const now = new Date();
     const backDated = saleDate !== todayStr();
     const sale = {
@@ -2101,6 +2182,7 @@ function Billing({ items, sales, services, staff, customers, setItems, setSales,
         amount: money(c.sellPrice * c.qty),
         lineType: isServiceLine(c) ? "service" : "product",
         ...(isServiceLine(c) ? { staffId: c.staffId, commissionPct: c.commissionPct ?? 0, serviceId: c.id } : {}),
+        ...(c.fromPackageId ? { fromPackageId: c.fromPackageId, packageName: c.packageName } : {}),
         ...(c.misc ? { misc: true } : {}),
       })),
       total, profit,
@@ -2120,6 +2202,13 @@ function Billing({ items, sales, services, staff, customers, setItems, setSales,
       // necessarily the person who did the work. This is what lets a biller's dashboard show
       // "your bills today" without showing them the whole shop's takings.
       ...(user?.uid ? { billedByUid: user.uid } : {}),
+      // The points ledger IS the bills: the balance is the sum of these across a customer's
+      // bills, never a stored running total. Deleting this bill reverses both automatically.
+      // Only written when non-zero, so a walk-in bill keeps its plain shape.
+      ...(willEarn > 0 ? { pointsEarned: willEarn } : {}),
+      ...(redeemedPts > 0 ? { pointsRedeemed: redeemedPts, pointsValue: redeemAmt } : {}),
+      // Which package sessions this bill drew down, so a delete can hand them back.
+      ...(packageDraws.length ? { packageRedemptions: packageDraws } : {}),
       // For Udhari (credit), record how much was paid now (and via UPI/Cash); rest stays outstanding.
       ...(pay === "Udhari" ? { paid: Math.min(total, Math.max(0, money(+paidNow || 0))) } : {}),
       ...(pay === "Udhari" && +paidNow > 0 ? { paidMode } : {}),
@@ -2131,6 +2220,10 @@ function Billing({ items, sales, services, staff, customers, setItems, setSales,
       const c = cart.find((x) => x.id === i.id && !isServiceLine(x));
       return c ? removeStock(i, c.qty, saleDate) : i; // FIFO deplete batches by expiry
     }));
+    // No decrement here on purpose: usesLeft is DERIVED from the packageRedemptions recorded on
+    // the bills (see reconcilePackages, run by the shell). Saving the bill IS the draw-down, and
+    // deleting it IS the restore — there's no counter to nudge and no reversal to forget.
+    //
     // Close the appointment this bill came from and link the two. Done after the sale is in
     // state, so the appointment is never marked completed against a bill that didn't save.
     if (fromAppointment) onBilled?.(fromAppointment, sale.id);
@@ -2145,6 +2238,7 @@ function Billing({ items, sales, services, staff, customers, setItems, setSales,
     setMobile("");
     setCustomerPhone("");
     setFromAppointment("");
+    setRedeemPts("");
     setPaidNow("");
     setPaidMode("Cash");
     setDiscount("");
@@ -2337,10 +2431,46 @@ function Billing({ items, sales, services, staff, customers, setItems, setSales,
                   </div>
                 </>
               )}
+
+              {/* Loyalty redemption. Only offered when there's a customer AND they're actually
+                  able to redeem — an always-visible "0 points available" row is clutter at a
+                  till that's trying to be fast. */}
+              {picked && rules.enabled && maxPts > 0 && (
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, paddingTop: 10, borderTop: "1px dashed #E0D9C4" }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: "#6B7E74" }}>
+                    Use points <span style={{ fontWeight: 400 }}>({ptsBalance} available)</span>
+                  </span>
+                  <div style={{ display: "flex", gap: 4, marginLeft: "auto", alignItems: "center" }}>
+                    <button className="btn small ghost" onClick={() => setRedeemPts(String(maxPts))} title={`Use the most allowed (${maxPts})`}>Max</button>
+                    <input
+                      className="input" style={{ width: 74 }} type="number" min="0" max={maxPts} step="1"
+                      placeholder="0" value={redeemPts} onChange={(e) => setRedeemPts(e.target.value)}
+                      aria-label="Points to redeem"
+                    />
+                  </div>
+                </div>
+              )}
+              {redeemedPts > 0 && (
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: "#1B5E43", fontWeight: 600, marginTop: 4 }}>
+                  <span>Points redeemed ({redeemedPts})</span><span>−{INR(redeemAmt)}</span>
+                </div>
+              )}
+              {/* Say when the typed number was trimmed, rather than silently ignoring it. */}
+              {picked && Math.floor(+redeemPts || 0) > maxPts && maxPts > 0 && (
+                <div style={{ fontSize: 11.5, color: "#8A5A14", marginTop: 2 }}>
+                  Capped at {maxPts} points on this bill ({rules.maxRedeemPctOfBill}% limit).
+                </div>
+              )}
+
               <div style={S.rcptTotal}>
                 <span>TOTAL</span>
                 <span>{INR(total)}</span>
               </div>
+              {picked && willEarn > 0 && (
+                <div style={{ fontSize: 11.5, color: "#1B5E43", textAlign: "right", marginTop: 2 }}>
+                  Earns {willEarn} point{willEarn > 1 ? "s" : ""} · balance {ptsBalance - redeemedPts + willEarn}
+                </div>
+              )}
               {/* Profit is hidden during billing; only surfaced as a warning when the bill would
                   run at a loss (e.g. a discount deeper than the margin), so it can't slip by. */}
               {profit < 0 && (
@@ -3609,7 +3739,17 @@ function SalesHistory({ sales, items, staff, setSales, setItems, store = STORE, 
     // Belt and braces: the nav never offers this view's delete to a worker, and the database
     // rules reject the write anyway — but the guard belongs next to the action too.
     if (!can(role, "sales.delete")) return notify("⚠ Only the owner can delete a bill.");
-    if (!confirm(`Delete this ${INR(s.total)} bill from ${s.date}? Stock will be added back.`)) return;
+    // Spell out everything that reverses. Points and package sessions come back on their own
+    // (both are derived from the bills), but the person deleting it should know that up front
+    // rather than discover it at the counter next week.
+    const undone = [
+      s.lines?.some((l) => !l.misc && !isServiceLine(l)) ? "stock will be added back" : "",
+      s.pointsEarned ? `${s.pointsEarned} point(s) earned will be removed` : "",
+      s.pointsRedeemed ? `${s.pointsRedeemed} point(s) used will be returned` : "",
+      s.packageRedemptions?.length ? `${s.packageRedemptions.length} package session(s) will be returned` : "",
+    ].filter(Boolean);
+    const detail = undone.length ? `\n\n${undone.map((u) => "• " + u).join("\n")}` : "";
+    if (!confirm(`Delete this ${INR(s.total)} bill from ${s.date}?${detail}`)) return;
     const deltas = {};
     // Misc / custom lines have no inventory item, and SERVICE lines have no stock at all, so
     // neither has anything to restore. Without the service guard a service that happens to
@@ -5876,8 +6016,101 @@ function StoreConfig({ config, setConfig, notify, log, user, role }) {
         </div>
       </section>
 
+      {can(role, "loyalty.configure") && <LoyaltyConfig config={config} setConfig={setConfig} notify={notify} log={log} />}
       {can(role, "users.manage") && <Users user={user} notify={notify} log={log} />}
     </div>
+  );
+}
+
+// ---------- Settings → Loyalty (owner only) ----------
+// The rules behind every point the salon hands out. Edited rarely, but the numbers here are
+// live: change the earn rate and the next bill earns at the new rate. Past bills keep the
+// points they were actually given — the ledger is the bills, so history can't be rewritten
+// from this screen.
+function LoyaltyConfig({ config, setConfig, notify, log }) {
+  const current = useMemo(() => loyaltyRules(config), [config]);
+  const [draft, setDraft] = useState(() => ({
+    enabled: current.enabled,
+    earnRate: String(current.earnRate),
+    redeemValue: String(current.redeemValue),
+    minRedeemPoints: String(current.minRedeemPoints),
+    maxRedeemPctOfBill: String(current.maxRedeemPctOfBill),
+    silver: String(current.tiers.silver),
+    gold: String(current.tiers.gold),
+    platinum: String(current.tiers.platinum),
+  }));
+  const set = (k, v) => setDraft((d) => ({ ...d, [k]: v }));
+  const n = (v) => Number(v);
+
+  const save = () => {
+    const earnRate = n(draft.earnRate), redeemValue = n(draft.redeemValue);
+    const minRedeemPoints = n(draft.minRedeemPoints), maxRedeemPctOfBill = n(draft.maxRedeemPctOfBill);
+    const silver = n(draft.silver), gold = n(draft.gold), platinum = n(draft.platinum);
+    if ([earnRate, redeemValue, minRedeemPoints, maxRedeemPctOfBill, silver, gold, platinum].some((x) => !Number.isFinite(x) || x < 0)) {
+      return notify("⚠ Every field must be a number, and none can be negative.");
+    }
+    if (maxRedeemPctOfBill > 100) return notify("⚠ The redemption cap can't be more than 100% of a bill.");
+    // Out-of-order thresholds would make a tier unreachable: nobody can be Gold if Gold needs
+    // more spend than Platinum.
+    if (!(silver <= gold && gold <= platinum)) return notify("⚠ Tier thresholds must go up: Silver ≤ Gold ≤ Platinum.");
+    setConfig((c) => ({
+      ...c,
+      loyaltyConfig: {
+        enabled: draft.enabled, earnRate, redeemValue, minRedeemPoints, maxRedeemPctOfBill,
+        tiers: { silver, gold, platinum },
+      },
+    }));
+    log?.("settings", `Updated loyalty rules — ${earnRate} pt/₹100, ₹${redeemValue}/pt, cap ${maxRedeemPctOfBill}%`);
+    notify("✓ Loyalty rules saved");
+  };
+
+  // Spell the rule out in plain money, because "1 point per ₹100 at ₹1 a point" is not
+  // something anyone should have to do arithmetic on to understand what they're giving away.
+  const pctBack = n(draft.earnRate) * n(draft.redeemValue);
+  const example = money(2000 * (pctBack / 100) / 100 * 100) || 0;
+
+  return (
+    <section style={{ ...S.panel, marginTop: 16 }}>
+      <div style={S.panelHead}>Loyalty points</div>
+      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 12, cursor: "pointer" }}>
+        <input type="checkbox" checked={draft.enabled} onChange={(e) => set("enabled", e.target.checked)} />
+        <span>Give customers points on their bills</span>
+      </label>
+
+      {draft.enabled && (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="Points earned per ₹100 spent"><input className="input" inputMode="decimal" value={draft.earnRate} onChange={(e) => set("earnRate", e.target.value)} /></Field>
+            <Field label="A point is worth (₹)"><input className="input" inputMode="decimal" value={draft.redeemValue} onChange={(e) => set("redeemValue", e.target.value)} /></Field>
+            <Field label="Minimum points to redeem"><input className="input" inputMode="numeric" value={draft.minRedeemPoints} onChange={(e) => set("minRedeemPoints", e.target.value)} /></Field>
+            <Field label="Most a bill can be paid with points (%)"><input className="input" inputMode="decimal" value={draft.maxRedeemPctOfBill} onChange={(e) => set("maxRedeemPctOfBill", e.target.value)} /></Field>
+          </div>
+          <div style={{ background: "#F4FAF6", border: "1px solid #CFE3D7", borderRadius: 8, padding: "8px 10px", fontSize: 12.5, color: "#1B5E43", marginBottom: 12 }}>
+            That's <b>{pctBack ? (pctBack / 100).toFixed(2) : "0"}%</b> back. A ₹2,000 bill earns{" "}
+            <b>{Math.floor((2000 / 100) * n(draft.earnRate) || 0)} points</b> — worth <b>{INR(example)}</b> off a future visit.
+          </div>
+
+          <div style={S.panelHead}>Tiers <span style={{ fontWeight: 400, color: "#8A9C90" }}>· by spend over the last 12 months</span></div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+            <Field label="Silver from (₹)"><input className="input" inputMode="numeric" value={draft.silver} onChange={(e) => set("silver", e.target.value)} /></Field>
+            <Field label="Gold from (₹)"><input className="input" inputMode="numeric" value={draft.gold} onChange={(e) => set("gold", e.target.value)} /></Field>
+            <Field label="Platinum from (₹)"><input className="input" inputMode="numeric" value={draft.platinum} onChange={(e) => set("platinum", e.target.value)} /></Field>
+          </div>
+          <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: -4, marginBottom: 10 }}>
+            Rolling 12 months, not lifetime — a tier should say a customer is valuable <i>now</i>.
+            Set a threshold to 0 to turn that tier off.
+          </div>
+        </>
+      )}
+
+      <div style={{ display: "flex", justifyContent: "flex-end" }}>
+        <button className="btn primary" onClick={save}>Save loyalty rules</button>
+      </div>
+      <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: 8, lineHeight: 1.6 }}>
+        Changing these affects future bills only. Points already given stay as they were —
+        the ledger is the bills themselves, so history can't be rewritten from here.
+      </div>
+    </section>
   );
 }
 
@@ -6324,7 +6557,7 @@ const makeCustomer = (form, { createdAt = "" } = {}) => {
 // The customer database, and each customer's profile. A biller can look someone up to bill
 // them (the picker) but cannot browse this list — see roles.js: customers.pick vs
 // customers.browse. RTDB can't enforce that split, so it's a UI control; the README says so.
-function Customers({ customers, sales, services, staff, setCustomers, notify, log }) {
+function Customers({ customers, sales, services, staff, customerPackages, config, setCustomers, notify, log }) {
   const [q, setQ] = useState("");
   const [sort, setSort] = useState("recent");
   const [editing, setEditing] = useState(null); // phone | "new"
@@ -6423,6 +6656,13 @@ function Customers({ customers, sales, services, staff, setCustomers, notify, lo
                       >
                         {c.name || "(no name)"}
                       </button>
+                      {/* The tier is the first thing worth knowing about a customer, so it
+                          rides on the name rather than hiding in the profile. */}
+                      {c.tier && (
+                        <span style={{ background: TIER_COLORS[c.tier], color: "#fff", fontWeight: 800, fontSize: 9.5, padding: "1px 6px", borderRadius: 999, marginLeft: 6, letterSpacing: ".04em" }}>
+                          {c.tier.toUpperCase()}
+                        </span>
+                      )}
                     </td>
                     <td style={{ whiteSpace: "nowrap" }}>{formatPhone(c.phone)}</td>
                     <td style={{ textAlign: "right" }}>{c.totalVisits || 0}</td>
@@ -6453,6 +6693,7 @@ function Customers({ customers, sales, services, staff, setCustomers, notify, lo
       {openProfile && (
         <CustomerProfile
           customer={openProfile} sales={sales} services={services} staff={staff}
+          customerPackages={customerPackages} config={config}
           onClose={() => setProfile(null)} onEdit={() => { setProfile(null); startEdit(openProfile); }}
         />
       )}
@@ -6463,18 +6704,62 @@ function Customers({ customers, sales, services, staff, setCustomers, notify, lo
 // ---------- Customer profile ----------
 // Phase 1 shows who they are and every bill they've had. Phase 3 adds the points ledger,
 // packages and next-due services; Phase 4 adds their segment.
-function CustomerProfile({ customer, sales, staff, onClose, onEdit }) {
+function CustomerProfile({ customer, sales, staff, services, customerPackages = [], config, onClose, onEdit }) {
   const bills = useMemo(() => billsForCustomer(sales, customer.phone).slice().reverse(), [sales, customer.phone]);
   const avg = customer.totalVisits ? money(customer.totalSpend / customer.totalVisits) : 0;
+  const today = todayStr();
+  const rules = useMemo(() => loyaltyRules(config), [config]);
+  const ledger = useMemo(() => pointsLedger(customer.phone, sales), [customer.phone, sales]);
+  const balance = useMemo(() => pointsBalance(customer.phone, sales), [customer.phone, sales]);
+  const spend12 = useMemo(() => rollingSpend(customer.phone, sales, today), [customer.phone, sales, today]);
+  const tier = useMemo(() => tierFor(customer.phone, sales, rules, today), [customer.phone, sales, rules, today]);
+  const gap = useMemo(() => nextTierGap(spend12, rules), [spend12, rules]);
+  const myPackages = useMemo(
+    () => redeemablePackages(customerPackages, customer.phone, today),
+    [customerPackages, customer.phone, today]
+  );
+
+  // What they're due for next: for each service they've had, when its rebooking cycle lands.
+  // Overdue first — that's the list worth acting on.
+  const nextDue = useMemo(() => {
+    const lastByService = new Map();
+    for (const b of billsForCustomer(sales, customer.phone)) {
+      for (const l of b.lines || []) {
+        if (!isServiceLine(l) || !l.serviceId) continue;
+        const prev = lastByService.get(l.serviceId);
+        if (!prev || b.date > prev) lastByService.set(l.serviceId, b.date);
+      }
+    }
+    const rows = [];
+    for (const [serviceId, lastDate] of lastByService) {
+      const svc = serviceById(services, serviceId);
+      if (!svc || !svc.rebookCycleDays) continue; // 0 = one-off work, never due
+      const due = addDays(lastDate, svc.rebookCycleDays);
+      rows.push({ name: svc.name, lastDate, due, overdueBy: daysBetweenISO(due, today) });
+    }
+    return rows.sort((a, b) => b.overdueBy - a.overdueBy);
+  }, [sales, customer.phone, services, today]);
 
   return (
     <Modal title={customer.name || formatPhone(customer.phone)} onClose={onClose}>
+      {tier && (
+        <div style={{ display: "inline-block", background: TIER_COLORS[tier], color: "#fff", fontWeight: 800, fontSize: 11.5, padding: "3px 10px", borderRadius: 999, marginBottom: 10, letterSpacing: ".04em" }}>
+          {tier.toUpperCase()}
+        </div>
+      )}
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
         <Card label="Visits" value={customer.totalVisits || 0} />
         <Card label="Total spend" value={INR(customer.totalSpend || 0)} accent />
         <Card label="Average bill" value={INR(avg)} />
         <Card label="Last visit" value={customer.lastVisitAt || "never"} />
+        {rules.enabled && <Card label="Points" value={balance} sub={balance > 0 ? `worth ${INR(redeemValueOf(balance, rules))}` : "none yet"} />}
       </div>
+
+      {rules.enabled && gap && (
+        <div style={{ fontSize: 12, color: "#6B7E74", marginBottom: 10 }}>
+          {INR(spend12)} spent in the last 12 months · <b>{INR(gap.need)}</b> more to reach {gap.tier}.
+        </div>
+      )}
 
       <div style={{ fontSize: 12.5, color: "#5E7468", lineHeight: 1.8, marginBottom: 12 }}>
         <div>☎ {formatPhone(customer.phone)}</div>
@@ -6482,6 +6767,61 @@ function CustomerProfile({ customer, sales, staff, onClose, onEdit }) {
         {customer.anniversary && <div>💐 Anniversary · {customer.anniversary.replace("-", " / ")}</div>}
         {customer.notes && <div style={{ marginTop: 6, whiteSpace: "pre-line", color: "#334" }}>📝 {customer.notes}</div>}
       </div>
+
+      {myPackages.length > 0 && (
+        <>
+          <div style={S.panelHead}>Packages</div>
+          {myPackages.map((cp) => {
+            const left = daysBetweenISO(today, cp.expiresAt);
+            return (
+              <div key={cp.id} style={S.row}>
+                <span>🎁 {cp.name}</span>
+                <span style={{ fontSize: 12.5 }}>
+                  <b>{cp.usesLeft}</b> of {cp.totalUses} left ·{" "}
+                  <span style={{ color: left <= 14 ? "#C44536" : "#8A9C90", fontWeight: left <= 14 ? 700 : 400 }}>
+                    {left <= 14 ? `expires in ${left}d` : `until ${cp.expiresAt}`}
+                  </span>
+                </span>
+              </div>
+            );
+          })}
+        </>
+      )}
+
+      {nextDue.length > 0 && (
+        <>
+          <div style={{ ...S.panelHead, marginTop: 12 }}>Next due</div>
+          {nextDue.slice(0, 5).map((d) => (
+            <div key={d.name} style={S.row}>
+              <span>{d.name}</span>
+              <span style={{ fontSize: 12.5, color: d.overdueBy > 0 ? "#C44536" : "#8A9C90", fontWeight: d.overdueBy > 0 ? 700 : 400 }}>
+                {d.overdueBy > 0 ? `${d.overdueBy}d overdue` : d.overdueBy === 0 ? "due today" : `due ${d.due}`}
+              </span>
+            </div>
+          ))}
+        </>
+      )}
+
+      {rules.enabled && ledger.length > 0 && (
+        <>
+          <div style={{ ...S.panelHead, marginTop: 12 }}>Points ledger</div>
+          <div style={{ maxHeight: 140, overflowY: "auto" }}>
+            <table className="tbl" style={{ width: "100%" }}>
+              <thead><tr><th>Date</th><th style={{ textAlign: "right" }}>Earned</th><th style={{ textAlign: "right" }}>Used</th><th style={{ textAlign: "right" }}>Balance</th></tr></thead>
+              <tbody>
+                {ledger.map((r) => (
+                  <tr key={r.id}>
+                    <td style={{ whiteSpace: "nowrap" }}>{r.date}</td>
+                    <td style={{ textAlign: "right", color: r.earned ? "#1B5E43" : "#C3CFC7" }}>{r.earned ? `+${r.earned}` : "—"}</td>
+                    <td style={{ textAlign: "right", color: r.redeemed ? "#C44536" : "#C3CFC7" }}>{r.redeemed ? `−${r.redeemed}` : "—"}</td>
+                    <td style={{ textAlign: "right", fontWeight: 700 }}>{r.balance}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
 
       <div style={{ ...S.panelHead, marginTop: 4 }}>Visit history</div>
       {bills.length === 0 ? (
@@ -6666,6 +7006,220 @@ function Services({ services, setServices, notify, log }) {
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 14 }}>
             <button className="btn" onClick={close}>Cancel</button>
             <button className="btn primary" onClick={save}>Save service</button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ---------- Packages (owner only) ----------
+// Prepaid work: the customer buys N sessions up front and draws them down. The money is taken
+// on day one, which is why a redemption at the till is a zero-price line.
+function Packages({ packages, setPackages, customerPackages, setCustomerPackages, services, customers, setCustomers, setSales, notify, log }) {
+  const [editing, setEditing] = useState(null); // package id | "new"
+  const [form, setForm] = useState(blankPackage());
+  const [err, setErr] = useState("");
+  const [selling, setSelling] = useState(null); // the package being sold
+  const [sellTo, setSellTo] = useState("");
+  const [showInactive, setShowInactive] = useState(false);
+
+  const listed = useMemo(() => packages.filter((p) => showInactive || p.active !== false), [packages, showInactive]);
+  const byPhone = useMemo(() => new Map(customers.map((c) => [c.phone, c])), [customers]);
+  const today = todayStr();
+
+  // Sold packages that still have life in them — what the salon actually owes work against.
+  const outstanding = useMemo(
+    () => customerPackages
+      .filter((cp) => cp.usesLeft > 0 && cp.expiresAt >= today)
+      .sort((a, b) => String(a.expiresAt).localeCompare(String(b.expiresAt))),
+    [customerPackages, today]
+  );
+  const liability = money(outstanding.reduce((a, cp) => a + (cp.pricePaid / Math.max(1, cp.totalUses)) * cp.usesLeft, 0));
+
+  const startNew = () => { setForm(blankPackage(today)); setEditing("new"); setErr(""); };
+  const startEdit = (p) => { setForm({ ...p }); setEditing(p.id); setErr(""); };
+  const close = () => { setEditing(null); setErr(""); };
+
+  const save = () => {
+    const problem = validatePackage(form);
+    if (problem) return setErr(problem);
+    const isNew = editing === "new";
+    const rec = makePackage(form, { id: isNew ? uid() : editing, createdAt: form.createdAt || today });
+    setPackages((list) => (isNew ? [...list, rec] : list.map((p) => (p.id === editing ? rec : p))));
+    log("settings", `${isNew ? "Added" : "Updated"} package — ${rec.name} · ${rec.totalUses} sessions · ${INR(rec.price)}`);
+    notify(`✓ ${rec.name} saved`);
+    close();
+  };
+
+  const toggleActive = (p) => {
+    const next = p.active === false;
+    if (!next && !confirm(`Stop selling “${p.name}”? Packages customers have already bought are unaffected.`)) return;
+    setPackages((list) => list.map((x) => (x.id === p.id ? { ...x, active: next } : x)));
+    log("settings", `${next ? "Re-activated" : "Deactivated"} package — ${p.name}`);
+    notify(next ? `${p.name} is on sale again` : `${p.name} taken off sale`);
+  };
+
+  // Selling a package takes money, so it creates a real bill alongside the entitlement — it
+  // must show up in revenue like any other sale, not appear as free work later.
+  const sell = () => {
+    const cust = byPhone.get(sellTo);
+    if (!cust) return notify("⚠ Pick a customer first.");
+    const pkg = selling;
+    const cp = sellPackage(pkg, cust.phone, { id: uid(), today });
+    const now = new Date();
+    const bill = {
+      id: uid(),
+      date: today,
+      time: now.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }),
+      lines: [{
+        name: `${pkg.name} (package · ${pkg.totalUses} sessions)`,
+        qty: 1, unit: "package", price: money(pkg.price), buyPrice: 0, amount: money(pkg.price),
+        lineType: "product", // it's a sale of an entitlement, not labour: no staff, no commission
+        packageId: pkg.id,
+      }],
+      total: money(pkg.price),
+      profit: money(pkg.price),
+      payment: "Cash",
+      customerPhone: cust.phone, customer: cust.name, mobile: cust.phone,
+      soldPackageId: cp.id,
+    };
+    setCustomerPackages((list) => [...list, cp]);
+    setSales((list) => [...list, bill]);
+    log("sale", `Sold package — ${pkg.name} to ${cust.name} · ${INR(pkg.price)}`);
+    notify(`✓ ${pkg.name} sold to ${cust.name} — expires ${cp.expiresAt}`);
+    setSelling(null); setSellTo("");
+  };
+
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const toggleService = (id) => setForm((f) => ({
+    ...f,
+    serviceIds: f.serviceIds.includes(id) ? f.serviceIds.filter((x) => x !== id) : [...f.serviceIds, id],
+  }));
+
+  return (
+    <div>
+      <Header title="Packages" sub={`${activePackages(packages).length} on sale · ${outstanding.length} live with customers`}>
+        <button className="btn primary big" onClick={startNew}>+ New package</button>
+      </Header>
+
+      <div style={S.cards}>
+        <Card label="Live packages" value={outstanding.length} sub="sold, with sessions left" />
+        <Card label="Sessions owed" value={outstanding.reduce((a, cp) => a + cp.usesLeft, 0)} sub="work already paid for" />
+        {/* The money already taken for work not yet done. Worth seeing: it's revenue that's
+            already been booked but still has a cost to come. */}
+        <Card label="Unearned value" value={INR(liability)} sub="paid for, not yet delivered" accent />
+      </div>
+
+      <section style={{ ...S.panel, marginTop: 14, marginBottom: 14 }}>
+        <label style={{ fontSize: 12.5, color: "#6B7E74", display: "flex", alignItems: "center", gap: 6 }}>
+          <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
+          Show packages no longer on sale
+        </label>
+      </section>
+
+      {listed.length === 0 ? (
+        <Empty text="No packages yet.">
+          <button className="btn primary" onClick={startNew}>Create the first one</button>
+        </Empty>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 12 }}>
+          {listed.map((p) => {
+            const covered = p.serviceIds.map((id) => serviceById(services, id)?.name).filter(Boolean);
+            const each = p.totalUses ? money(p.price / p.totalUses) : 0;
+            return (
+              <section key={p.id} style={{ ...S.panel, opacity: p.active === false ? 0.55 : 1 }}>
+                <div style={{ fontWeight: 800, fontSize: 15 }}>{p.name}</div>
+                <div style={{ fontSize: 12.5, color: "#5E7468", marginTop: 6, lineHeight: 1.7 }}>
+                  <div><b>{p.totalUses}</b> sessions · <b>{INR(p.price)}</b> <span style={{ color: "#8A9C90" }}>({INR(each)} each)</span></div>
+                  <div>Valid {p.validityDays} days from purchase</div>
+                  <div style={{ color: "#8A9C90" }}>{covered.length ? covered.join(", ") : "⚠ no services attached"}</div>
+                </div>
+                <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+                  {p.active !== false && <button className="btn primary" style={{ fontSize: 12 }} onClick={() => { setSelling(p); setSellTo(""); }}>Sell</button>}
+                  <button className="btn ghost" style={{ fontSize: 12 }} onClick={() => startEdit(p)}>Edit</button>
+                  <button className="btn ghost" style={{ fontSize: 12 }} onClick={() => toggleActive(p)}>
+                    {p.active === false ? "Put on sale" : "Stop selling"}
+                  </button>
+                </div>
+              </section>
+            );
+          })}
+        </div>
+      )}
+
+      {outstanding.length > 0 && (
+        <section style={{ ...S.panel, marginTop: 16 }}>
+          <div style={S.panelHead}>Live customer packages</div>
+          <div style={{ overflowX: "auto" }}>
+            <table className="tbl" style={{ width: "100%" }}>
+              <thead><tr><th>Customer</th><th>Package</th><th style={{ textAlign: "right" }}>Left</th><th>Expires</th></tr></thead>
+              <tbody>
+                {outstanding.map((cp) => {
+                  const daysLeft = daysBetweenISO(today, cp.expiresAt);
+                  const soon = daysLeft <= 14;
+                  return (
+                    <tr key={cp.id}>
+                      <td>{byPhone.get(cp.customerPhone)?.name || formatPhone(cp.customerPhone)}</td>
+                      <td>{cp.name}</td>
+                      <td style={{ textAlign: "right", fontWeight: 700 }}>{cp.usesLeft} / {cp.totalUses}</td>
+                      <td style={{ color: soon ? "#C44536" : "#334", fontWeight: soon ? 700 : 400, whiteSpace: "nowrap" }}>
+                        {cp.expiresAt}{soon ? ` · ${daysLeft}d left` : ""}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {editing && (
+        <Modal title={editing === "new" ? "New package" : "Edit package"} onClose={close}>
+          <Field label="Name"><input className="input" autoFocus placeholder="e.g. 6 Facials" value={form.name} onChange={(e) => set("name", e.target.value)} /></Field>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+            <Field label="Sessions"><input className="input" type="number" min="1" value={form.totalUses} onChange={(e) => set("totalUses", e.target.value)} /></Field>
+            <Field label="Price (₹)"><input className="input" inputMode="decimal" value={form.price} onChange={(e) => set("price", e.target.value)} /></Field>
+            <Field label="Valid (days)"><input className="input" type="number" min="1" value={form.validityDays} onChange={(e) => set("validityDays", e.target.value)} /></Field>
+          </div>
+          <Field label="Services this package covers">
+            <div style={{ maxHeight: 180, overflowY: "auto", border: "1px solid #DDE5DF", borderRadius: 9, padding: 6 }}>
+              {activeServices(services).map((s) => (
+                <label key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 2px", fontSize: 13, cursor: "pointer" }}>
+                  <input type="checkbox" checked={form.serviceIds.includes(s.id)} onChange={() => toggleService(s.id)} />
+                  <span style={{ flex: 1 }}>{s.name}</span>
+                  <span style={{ color: "#8A9C90", fontSize: 12 }}>{INR(s.price)}</span>
+                </label>
+              ))}
+            </div>
+          </Field>
+          <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: -4 }}>
+            At billing, any of these services goes on the customer's bill at ₹0 and uses one session.
+          </div>
+          {err && <div style={{ color: "#B23B2E", fontSize: 12.5, marginTop: 10 }}>{err}</div>}
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 14 }}>
+            <button className="btn" onClick={close}>Cancel</button>
+            <button className="btn primary" onClick={save}>Save package</button>
+          </div>
+        </Modal>
+      )}
+
+      {selling && (
+        <Modal title={`Sell “${selling.name}”`} onClose={() => setSelling(null)}>
+          <div style={{ fontSize: 13, color: "#5E7468", marginBottom: 10, lineHeight: 1.6 }}>
+            {selling.totalUses} sessions · <b>{INR(selling.price)}</b> · valid {selling.validityDays} days.
+            This records a <b>{INR(selling.price)}</b> bill today and gives the customer their sessions.
+          </div>
+          <Field label="Customer">
+            <CustomerPicker
+              customers={customers} value={sellTo} onPick={setSellTo}
+              onCreate={(rec) => setCustomers((list) => [...list, rec])} notify={notify}
+            />
+          </Field>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 14 }}>
+            <button className="btn" onClick={() => setSelling(null)}>Cancel</button>
+            <button className="btn primary" onClick={sell} disabled={!sellTo}>Sell &amp; bill {INR(selling.price)}</button>
           </div>
         </Modal>
       )}
