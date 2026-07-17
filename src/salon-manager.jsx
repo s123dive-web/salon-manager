@@ -6,28 +6,28 @@ import {
 } from "recharts";
 import JsBarcode from "jsbarcode";
 import qrcode from "qrcode-generator";
-import { onAuthStateChanged, signInWithEmailAndPassword, signOut, sendPasswordResetEmail, EmailAuthProvider, reauthenticateWithCredential } from "firebase/auth";
-import { auth } from "./lib/firebase.js";
+import { onAuthStateChanged, signInWithEmailAndPassword, signOut, sendPasswordResetEmail, EmailAuthProvider, reauthenticateWithCredential, createUserWithEmailAndPassword, getAuth } from "firebase/auth";
+import { deleteApp } from "firebase/app";
+import { auth, isFirebaseConfigured, secondaryApp } from "./lib/firebase.js";
 import {
-  toMap, mapToArray, isLegacyShape, buildSliceUpdate, mergeRemote,
+  SLICES, toMap, mapToArray, isLegacyShape, buildSliceUpdate, mergeRemote,
   writeSlice, overwriteSlice, subscribeSlice, subscribeConnection,
-  subscribeConfig, writeConfig,
+  subscribeConfig, writeConfig, readableSlices,
+  subscribeUsers, subscribeOwnUser, writeUser, updateUser, readUsersOnce,
 } from "./lib/sync.js";
 import { parseFile, parseRawText } from "./lib/parse.js";
 import { itemBarcodes, findItemByBarcode, findBarcodeClash, cleanBarcodeList, parseBarcodeText, withBarcodeSep, looksLikeBarcode } from "./lib/barcodes.js";
 import { exportJson, exportXlsx, importXlsx } from "./lib/backup.js";
 import { can, ROLE_LABELS, ROLE_DESCRIPTIONS, ROLES, resolveRole, isBootstrap, validateUserChange } from "./lib/roles.js";
 import {
-  PRODUCT_CATEGORIES, PRODUCT_CATEGORY_ICONS, STOCK_TYPES,
+  PRODUCT_CATEGORIES, PRODUCT_CATEGORY_ICONS,
   buildProducts, buildServices, buildStaff, buildTemplates,
-  SERVICE_CATEGORIES, serviceIconFor, DEFAULT_LOYALTY_CONFIG,
 } from "./lib/seed.js";
 import { uploadBillProof, deleteBillProof, PROOF_ACCEPT, MAX_PROOF_BYTES } from "./lib/bills.js";
-import {
-  PAYMENT_METHODS, PAYMENT_STATUS, DAILY_CATEGORIES, itemsForCategory,
-  blankDailyBill, validateDailyBill, dailyOutstanding, makeDailyBill,
-  dailyToVendorBill, upsertMirror, lineTotal,
-} from "./lib/dailyBills.js";
+// NOTE: src/lib/dailyBills.js (and its test suite) is carried over intact from the grocery core,
+// but Salon Manager does not ship the Daily-Need Bills section — a salon's consumable purchases
+// go through Vendor Bills. The module stays so that a grocery-era backup still restores, and so
+// the section can be revived without rewriting its validated mappers.
 import {
   formatINR, inrCompact, summarize, dailyRevenueSeries, monthlyRevenueProfit,
   salesHeatmap, topItems as topItemsBy, paymentBreakdown, udhariOutstandingSeries,
@@ -345,6 +345,13 @@ function guessCategory(name, items = []) {
 // Every item starts at 0 stock — the salon counts its real opening stock in.
 const SEED_ITEMS = buildProducts({ uid, today: todayStr(), iconFor });
 
+// The opening service menu, sample stylists and reminder templates. Same first-run-only
+// discipline as the product shelf: written once when the slice is empty, never on top of a
+// salon that has already edited its own menu.
+const SEED_SERVICES = buildServices({ uid, today: todayStr() });
+const SEED_STAFF = buildStaff({ uid, today: todayStr() });
+const SEED_TEMPLATES = buildTemplates({ uid, today: todayStr() });
+
 // Categories of activity recorded in the global Activity Log.
 const LOG_TYPES = ["sale", "inventory", "expense", "import", "backup", "bill", "settings"];
 
@@ -512,6 +519,9 @@ function Login() {
 
   const submit = async (e) => {
     e?.preventDefault();
+    // Without this the SDK throws auth/invalid-api-key, which reads like a bug rather than
+    // "nobody has connected this app to a Firebase project yet".
+    if (!isFirebaseConfigured) return setErr("This app isn't connected to a Firebase project yet — see src/lib/firebase.js.");
     setBusy(true); setErr(""); setInfo("");
     try {
       await signInWithEmailAndPassword(auth, email.trim(), pwd);
@@ -542,6 +552,13 @@ function Login() {
           </div>
         </div>
         <h2 style={{ fontSize: 16, margin: "18px 0 12px" }}>Sign in</h2>
+        {!isFirebaseConfigured && (
+          <div style={{ background: "#FFF6E5", border: "1px solid #F0D9A8", borderRadius: 9, padding: "10px 12px", marginBottom: 12, fontSize: 12.5, color: "#7A5B14", lineHeight: 1.6 }}>
+            <b>Not connected yet.</b> This build still has the placeholder Firebase config, so
+            sign-in and sync are inactive. Create a Firebase project and fill in
+            {" "}<code>src/lib/firebase.js</code> — the setup steps are in that file and in the README.
+          </div>
+        )}
         <Field label="Email"><input className="input" type="email" value={email} autoComplete="username" autoFocus onChange={(e) => setEmail(e.target.value)} /></Field>
         <Field label="Password"><input className="input" type="password" value={pwd} autoComplete="current-password" onChange={(e) => setPwd(e.target.value)} /></Field>
         {err && <div style={{ color: "#C44536", fontSize: 13, marginBottom: 8 }}>{err}</div>}
@@ -561,10 +578,102 @@ export default function App() {
   const [user, setUser] = useState(undefined); // undefined = checking, null = signed out
   useEffect(() => onAuthStateChanged(auth, setUser), []);
   if (user === undefined) {
-    return <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "#10331F", color: "#BCD2C4", fontFamily: "system-ui, sans-serif" }}>Loading…</div>;
+    return <Splash>Loading…</Splash>;
   }
   if (!user) return <Login />;
-  return <StoreManager user={user} onLogout={() => signOut(auth)} />;
+  return <RoleGate user={user} onLogout={() => signOut(auth)} />;
+}
+
+const Splash = ({ children }) => (
+  <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "#10331F", color: "#BCD2C4", fontFamily: "system-ui, sans-serif", padding: 24, textAlign: "center" }}>
+    {children}
+  </div>
+);
+
+// Why the signed-in user can't get in. Being authenticated is not the same as being staff.
+const DENIED_MESSAGES = {
+  "not-invited":
+    "This account isn't set up for this salon yet. Ask the owner to add you under Settings → Users.",
+  deactivated:
+    "This account has been deactivated. Ask the owner to re-activate it under Settings → Users.",
+  error:
+    "Couldn't check your access — the salon database may be unreachable, or the security rules may not be deployed yet.",
+};
+
+// ---------- role gate ----------
+// Signing in proves WHO you are; this resolves WHAT you may do, and nothing renders until it
+// has. Rendering the shell first and hiding tabs afterwards would flash owner-only views at a
+// worker on a slow connection, so the gate is a hard barrier rather than a filter.
+//
+// Bootstrap: the very first user to sign in while shop/users is empty claims owner. That is how
+// a fresh deployment gets its first owner with no Firebase console visit, and it mirrors the
+// bootstrap rule in database.rules.json. Once anyone is registered, the node locks down.
+function RoleGate({ user, onLogout }) {
+  const [state, setState] = useState({ phase: "loading" });
+
+  useEffect(() => {
+    let cancelled = false;
+    let claiming = false;
+
+    // Claim ownership of an un-claimed salon. Only reached when this user has no record.
+    const tryBootstrap = async () => {
+      if (claiming) return; // the listener re-fires on our own write; claim once
+      claiming = true;
+      try {
+        const usersMap = await readUsersOnce();
+        if (cancelled) return;
+        if (!isBootstrap(usersMap)) return setState({ phase: "denied", reason: "not-invited" });
+        await writeUser(user.uid, {
+          email: user.email || "",
+          name: "",
+          role: "owner",
+          active: true,
+          createdAt: todayStr(),
+        });
+        // The subscription below re-fires with the new record and lets us in — no setState here.
+      } catch {
+        // A rejected read IS the answer: the rules only allow reading shop/users while it is
+        // empty, so being refused means the salon already has an owner and we aren't on the list.
+        if (!cancelled) setState({ phase: "denied", reason: "not-invited" });
+      }
+    };
+
+    // Every authenticated user may read their OWN record even before they have one (see the
+    // $uid .read rule), which is what makes "you aren't set up yet" distinguishable from
+    // "the network is down". Staying subscribed also means a live demotion or deactivation
+    // takes effect immediately, without waiting for a reload.
+    const unsub = subscribeOwnUser(
+      user.uid,
+      (record) => {
+        if (cancelled) return;
+        if (!record) return void tryBootstrap();
+        const role = resolveRole(record);
+        setState(role ? { phase: "ready", role, record } : { phase: "denied", reason: "deactivated" });
+      },
+      () => { if (!cancelled) setState({ phase: "denied", reason: "error" }); }
+    );
+
+    return () => { cancelled = true; unsub(); };
+  }, [user.uid, user.email]);
+
+  if (state.phase === "loading") return <Splash>Checking your access…</Splash>;
+
+  if (state.phase === "denied") {
+    return (
+      <Splash>
+        <div style={{ maxWidth: 420 }}>
+          <div style={{ fontSize: 34, marginBottom: 10 }}>🔒</div>
+          <div style={{ fontWeight: 800, fontSize: 18, color: "#fff", marginBottom: 8 }}>No access</div>
+          <p style={{ fontSize: 13.5, lineHeight: 1.6, marginBottom: 6 }}>{DENIED_MESSAGES[state.reason]}</p>
+          <p style={{ fontSize: 12, opacity: 0.75, marginBottom: 18 }}>Signed in as {user.email}</p>
+          <button className="btn" onClick={onLogout} style={{ cursor: "pointer" }}>Sign out</button>
+        </div>
+        <style>{CSS}</style>
+      </Splash>
+    );
+  }
+
+  return <StoreManager user={user} role={state.role} onLogout={onLogout} />;
 }
 
 // ---------- main app ----------
@@ -580,29 +689,46 @@ const tabEnabled = (k) => FEATURES[k] !== false;
 
 // Top-level sidebar destinations, plus the secondary group tucked under "Other".
 // Both feed the same `tab` switch below — grouping is purely a nav-rendering concern.
+//
+// The 4th element is the permission required to reach the tab (null = everyone). It is the
+// SAME action the view's own guard checks, so hiding a tab and blocking the view can't drift
+// apart. Hiding alone is not enough: `tab` is state, so every gated branch in the render
+// switch re-checks with can() — see viewFor() below.
 const TOP_TABS = [
-  ["dashboard", "⌂", "Dashboard"],
-  ["billing", "₹", "Billing (POS)"],
-  ["inventory", "▦", "Inventory"],
-  ["sales", "⊟", "Sales History"],
-  ["finance", "∑", "Finance"],
-  ["stats", "📊", "Stats"],
-  ["udhari", "💳", "Udhari (Credit)"],
-  ["expense", "⊝", "Add Expense"],
-  ["dailybills", "🧺", "Daily-Need Bills"],
+  ["dashboard", "⌂", "Dashboard", null],
+  ["billing", "₹", "Billing (POS)", "billing.use"],
+  ["inventory", "▦", "Inventory", "inventory.view"],
+  ["sales", "⊟", "Sales History", "sales.view"],
+  ["finance", "∑", "Finance", "finance.view"],
+  ["stats", "📊", "Stats", "stats.view"],
+  ["udhari", "💳", "Udhari (Credit)", "udhari.manage"],
+  ["expense", "⊝", "Add Expense", "expenses.manage"],
 ];
 const OTHER_TABS = [
-  ["alerts", "⚠", "Alerts"],
-  ["vendorbills", "🧾", "Vendor Bills"],
-  ["raw", "⇪", "Data Import"],
-  ["barcode", "▥", "Barcode Creator"],
-  ["logs", "❑", "Activity Log"],
-  ["changelog", "🗒", "App Change Log"],
-  ["settings", "🏪", "Store Settings"],
-  ["admin", "⚙", "Admin"],
+  ["alerts", "⚠", "Alerts", "alerts.view"],
+  ["vendorbills", "🧾", "Vendor Bills", "vendorBills.manage"],
+  ["raw", "⇪", "Data Import", "import.use"],
+  ["barcode", "▥", "Barcode Creator", "barcode.use"],
+  ["logs", "❑", "Activity Log", "logs.view"],
+  ["changelog", "🗒", "App Change Log", null],
+  ["settings", "🏪", "Salon Settings", "settings.manage"],
+  ["admin", "⚙", "Admin", "settings.manage"],
 ];
 
-function StoreManager({ user, onLogout }) {
+// A tab is reachable when its feature flag is on AND the signed-in role holds its permission.
+const tabAllowed = (role, [k, , , action]) => tabEnabled(k) && (!action || can(role, action));
+
+// Slices that get seeded on first run, and the permission required to write that seed. A role
+// without the permission simply doesn't seed — it waits for an owner to sign in and do it —
+// rather than firing a write the rules will bounce.
+const SEEDERS = {
+  items: { build: () => SEED_ITEMS, action: "inventory.edit" },
+  services: { build: () => SEED_SERVICES, action: "services.manage" },
+  staff: { build: () => SEED_STAFF, action: "staff.manage" },
+  messageTemplates: { build: () => SEED_TEMPLATES, action: "reminders.use" },
+};
+
+function StoreManager({ user, role, onLogout }) {
   const [tab, setTab] = useState("dashboard");
   const [otherOpen, setOtherOpen] = useState(false);
   const [items, setItems] = useState([]);
@@ -610,7 +736,15 @@ function StoreManager({ user, onLogout }) {
   const [expenses, setExpenses] = useState([]);
   const [logs, setLogs] = useState([]);
   const [bills, setBills] = useState([]); // vendor purchase bills (vendorBills slice)
-  const [dailyBills, setDailyBills] = useState([]); // daily-need vendor bills (dailyBills slice; mirrors into vendorBills)
+  const [dailyBills, setDailyBills] = useState([]); // legacy daily-need bills; mirrors into vendorBills
+  // ---- salon slices ----
+  const [customers, setCustomers] = useState([]);
+  const [services, setServices] = useState([]);
+  const [staff, setStaff] = useState([]);
+  const [appointments, setAppointments] = useState([]);
+  const [packages, setPackages] = useState([]);
+  const [customerPackages, setCustomerPackages] = useState([]);
+  const [messageTemplates, setMessageTemplates] = useState([]);
   // Owner-added categories that have no item yet (device-local; once an item uses one it also
   // rides along in the synced items data). Merged with the built-ins + item categories below.
   const [customCats, setCustomCats] = useState(() => {
@@ -630,43 +764,75 @@ function StoreManager({ user, onLogout }) {
   // un-pushed local edits. A localStorage cache gives instant first paint and offline reads.
   // See src/lib/sync.js for the array↔map bridge.
   const CACHE_KEY = "slm-cache-v1";
-  const lastRemote = useRef({ items: {}, sales: {}, expenses: {}, logs: {}, vendorBills: {}, dailyBills: {} }); // last cloud map per slice
-  const synced = useRef({ items: false, sales: false, expenses: false, logs: false, vendorBills: false, dailyBills: false });
-  const seeded = useRef(false);
+  // Last cloud map / first-snapshot flag, per slice. Built from SLICES so adding a slice can't
+  // leave a hole here that silently disables its delta pushes.
+  const lastRemote = useRef(Object.fromEntries(SLICES.map((s) => [s, {}])));
+  const synced = useRef(Object.fromEntries(SLICES.map((s) => [s, false])));
+  const seeded = useRef({}); // slice → true once this device has written that slice's seed
   const configSynced = useRef(false);        // have we read shop/config from the cloud at least once?
   const lastConfig = useRef(JSON.stringify(readCachedConfig())); // last config JSON reconciled with the cloud (blocks echo writes)
   const [online, setOnline] = useState(true);
 
+  // The one place that maps a slice name → its React setter. Everything below (cache, sync,
+  // push) drives off this, so a new slice is wired in exactly one place.
+  const SETTERS = useMemo(() => ({
+    items: setItems, sales: setSales, expenses: setExpenses, logs: setLogs,
+    vendorBills: setBills, dailyBills: setDailyBills,
+    customers: setCustomers, services: setServices, staff: setStaff,
+    appointments: setAppointments, packages: setPackages,
+    customerPackages: setCustomerPackages, messageTemplates: setMessageTemplates,
+  }), []);
+
+  // Slices this role may READ, and therefore subscribe to. Subscribing to a slice the rules
+  // deny would spam permission-denied and pop a sync-error toast at the counter, so a worker
+  // simply never asks for the money slices. Mirrors database.rules.json.
+  const mySlices = useMemo(() => readableSlices(role), [role]);
+
   // Always-current local state, readable from inside async listeners (for the merge).
-  const dataRef = useRef({ items, sales, expenses, logs, vendorBills: bills, dailyBills });
-  dataRef.current = { items, sales, expenses, logs, vendorBills: bills, dailyBills };
+  const dataRef = useRef({});
+  dataRef.current = { items, sales, expenses, logs, vendorBills: bills, dailyBills, customers, services, staff, appointments, packages, customerPackages, messageTemplates };
   const notifyRef = useRef(null);
 
-  // 1) Instant paint from the local cache.
+  // 1) Instant paint from the local cache. Only restores slices this role may read — otherwise
+  //    a cache left behind by an owner on a shared counter device would show a worker the
+  //    expense book. The cache is written with the same filter (see the write effect below).
   useEffect(() => {
     try {
       const c = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
-      if (c) { setItems(normalizeItems(c.items || [])); setSales(c.sales || []); setExpenses(c.expenses || []); setLogs(c.logs || []); setBills(c.vendorBills || []); setDailyBills(c.dailyBills || []); }
+      if (c) {
+        for (const slice of mySlices) {
+          const cached = c[slice];
+          if (!Array.isArray(cached)) continue;
+          SETTERS[slice](slice === "items" ? normalizeItems(cached) : cached);
+        }
+      }
     } catch (e) { console.error("cache read failed", e); }
     setLoaded(true);
-  }, []);
+  }, [mySlices, SETTERS]);
 
   // 2) Subscribe to the cloud; changes from any device flow in live.
   useEffect(() => {
-    const slices = [["items", setItems], ["sales", setSales], ["expenses", setExpenses], ["logs", setLogs], ["vendorBills", setBills], ["dailyBills", setDailyBills]];
-    const unsubs = slices.map(([slice, setter]) =>
+    const unsubs = mySlices.map((slice) =>
       subscribeSlice(
         slice,
         (val) => {
-          // First run anywhere: seed the catalogue once, then write it to the cloud.
-          if (slice === "items" && val === null) {
-            if (seeded.current) { synced.current.items = true; return; }
-            seeded.current = true;
-            const map = toMap(SEED_ITEMS);
-            lastRemote.current.items = map;
-            synced.current.items = true;
-            setItems(normalizeItems(mapToArray("items", map)));
-            overwriteSlice("items", map).catch((e) => console.error("seed write failed", e));
+          // First run anywhere: seed this slice once, then write it to the cloud. Seeding is a
+          // privileged write (the catalogue is owner/inventory territory), so a role without
+          // the permission just marks itself synced and waits — an unprivileged seed attempt
+          // would be rejected and would leave the local list out of step with the cloud.
+          const seeder = SEEDERS[slice];
+          if (seeder && val === null) {
+            if (seeded.current[slice] || !can(role, seeder.action)) {
+              synced.current[slice] = true;
+              return;
+            }
+            seeded.current[slice] = true;
+            const map = toMap(seeder.build());
+            lastRemote.current[slice] = map;
+            synced.current[slice] = true;
+            const next = mapToArray(slice, map);
+            SETTERS[slice](slice === "items" ? normalizeItems(next) : next);
+            overwriteSlice(slice, map).catch((e) => console.error("seed write failed", slice, e));
             return;
           }
           const theirs = toMap(val);
@@ -681,7 +847,7 @@ function StoreManager({ user, onLogout }) {
           // Merge against the TRUE current state via the functional updater — NOT a ref that
           // may lag a just-dispatched local edit by a render. This is what stops an incoming
           // snapshot from silently reverting an edit/restock/delete made a moment earlier.
-          setter((curr) => {
+          SETTERS[slice]((curr) => {
             const next = mapToArray(slice, wasSynced ? mergeRemote(base, theirs, toMap(curr)) : theirs);
             return slice === "items" ? normalizeItems(next) : next;
           });
@@ -694,7 +860,7 @@ function StoreManager({ user, onLogout }) {
     );
     const unsubConn = subscribeConnection(setOnline);
     return () => { unsubs.forEach((u) => u()); unsubConn(); };
-  }, []);
+  }, [mySlices, role, SETTERS]);
 
   // 3) Push field-level deltas to the cloud when a slice changes locally (after the first
   //    cloud snapshot). buildSliceUpdate skips no-op echoes, so this is loop-safe.
@@ -714,6 +880,13 @@ function StoreManager({ user, onLogout }) {
   useEffect(() => { if (!loaded) return; const t = setTimeout(() => pushSlice("logs", logs), 300); return () => clearTimeout(t); }, [logs, loaded, pushSlice]);
   useEffect(() => { if (!loaded) return; const t = setTimeout(() => pushSlice("vendorBills", bills), 300); return () => clearTimeout(t); }, [bills, loaded, pushSlice]);
   useEffect(() => { if (!loaded) return; const t = setTimeout(() => pushSlice("dailyBills", dailyBills), 300); return () => clearTimeout(t); }, [dailyBills, loaded, pushSlice]);
+  useEffect(() => { if (!loaded) return; const t = setTimeout(() => pushSlice("customers", customers), 300); return () => clearTimeout(t); }, [customers, loaded, pushSlice]);
+  useEffect(() => { if (!loaded) return; const t = setTimeout(() => pushSlice("services", services), 300); return () => clearTimeout(t); }, [services, loaded, pushSlice]);
+  useEffect(() => { if (!loaded) return; const t = setTimeout(() => pushSlice("staff", staff), 300); return () => clearTimeout(t); }, [staff, loaded, pushSlice]);
+  useEffect(() => { if (!loaded) return; const t = setTimeout(() => pushSlice("appointments", appointments), 300); return () => clearTimeout(t); }, [appointments, loaded, pushSlice]);
+  useEffect(() => { if (!loaded) return; const t = setTimeout(() => pushSlice("packages", packages), 300); return () => clearTimeout(t); }, [packages, loaded, pushSlice]);
+  useEffect(() => { if (!loaded) return; const t = setTimeout(() => pushSlice("customerPackages", customerPackages), 300); return () => clearTimeout(t); }, [customerPackages, loaded, pushSlice]);
+  useEffect(() => { if (!loaded) return; const t = setTimeout(() => pushSlice("messageTemplates", messageTemplates), 300); return () => clearTimeout(t); }, [messageTemplates, loaded, pushSlice]);
 
   // 3b) Store config is a singleton, not a keyed slice — subscribe/write it whole. Incoming
   //     cloud values update state and the pre-auth cache; local edits push back (the lastConfig
@@ -747,9 +920,18 @@ function StoreManager({ user, onLogout }) {
   }, [config, loaded]);
 
   // 4) Mirror to a local cache (instant next paint + offline reads + no data loss on close).
+  //    Only the slices this role may read are cached: the counter tablet is a shared device, so
+  //    an owner's session must not leave the expense book sitting in localStorage for whoever
+  //    signs in next. The read effect applies the same filter on the way back in.
   useEffect(() => {
     if (!loaded) return;
-    const writeCache = () => { try { localStorage.setItem(CACHE_KEY, JSON.stringify(dataRef.current)); } catch (e) { console.error("cache write failed", e); } };
+    const writeCache = () => {
+      try {
+        const snapshot = {};
+        for (const slice of mySlices) snapshot[slice] = dataRef.current[slice];
+        localStorage.setItem(CACHE_KEY, JSON.stringify(snapshot));
+      } catch (e) { console.error("cache write failed", e); }
+    };
     const t = setTimeout(writeCache, 400);
     const onHide = () => { if (document.visibilityState === "hidden") writeCache(); };
     window.addEventListener("beforeunload", writeCache);
@@ -761,7 +943,7 @@ function StoreManager({ user, onLogout }) {
       window.removeEventListener("pagehide", writeCache);
       document.removeEventListener("visibilitychange", onHide);
     };
-  }, [items, sales, expenses, logs, bills, dailyBills, loaded]);
+  }, [items, sales, expenses, logs, bills, dailyBills, customers, services, staff, appointments, packages, customerPackages, messageTemplates, loaded, mySlices]);
 
   const toastTimer = useRef(null);
   const notify = (msg) => {
@@ -821,7 +1003,8 @@ function StoreManager({ user, onLogout }) {
 
   const exportData = (fmt) => {
     const data = { items, sales, expenses, logs, vendorBills: bills, dailyBills, customCats };
-    const fname = `prakash-supermart-${todayStr()}.${fmt === "xlsx" ? "xlsx" : "json"}`;
+    const slug = (store.name || "salon").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "salon";
+    const fname = `${slug}-${todayStr()}.${fmt === "xlsx" ? "xlsx" : "json"}`;
     try {
       if (fmt === "xlsx") exportXlsx(data, fname);
       else exportJson(data, fname);
@@ -861,9 +1044,52 @@ function StoreManager({ user, onLogout }) {
 
   const lowStock = items.filter((i) => i.stock <= i.lowAt);
   const alertCount = lowStock.length + items.filter((i) => { const d = daysToExpiry(i); return d != null && d <= 30; }).length;
+
+  // The rails this role actually sees. Hiding a tab is a convenience, not the control — the
+  // render switch below re-checks every gated view with can(), because `tab` is just state and
+  // could be set to anything.
+  const myTopTabs = useMemo(() => TOP_TABS.filter((t) => tabAllowed(role, t)), [role]);
+  const myOtherTabs = useMemo(() => OTHER_TABS.filter((t) => tabAllowed(role, t)), [role]);
+
+  // If the active tab isn't allowed (a live demotion, or a stale tab from a previous session),
+  // fall back to the dashboard rather than rendering a blank main pane.
+  useEffect(() => {
+    const all = [...TOP_TABS, ...OTHER_TABS];
+    const current = all.find(([k]) => k === tab);
+    if (current && !tabAllowed(role, current)) setTab("dashboard");
+  }, [role, tab]);
+
   // Show the "Other" sub-list when the user toggled it open, or whenever an active tab
   // lives inside it (so the current page is never hidden behind a collapsed group).
-  const showOther = otherOpen || OTHER_TABS.some(([k]) => k === tab);
+  const showOther = otherOpen || myOtherTabs.some(([k]) => k === tab);
+
+  // ---- the render switch, with a permission guard on every gated view ----
+  // `guard` is the second enforcement layer. The nav already hides what a role can't reach, but
+  // `tab` is ordinary state: hiding a button is not a control. Each branch names the SAME action
+  // its nav entry declares, so a tab and its view can never drift out of step.
+  const guard = (action, node) => (can(role, action) ? node : <NoAccess role={role} />);
+  const dashboard = (
+    <Dashboard items={items} sales={sales} lowStock={can(role, "inventory.view") ? lowStock : []} goBilling={() => setTab("billing")} role={role} />
+  );
+  const VIEWS = {
+    dashboard: () => dashboard,
+    billing: () => guard("billing.use", <Billing items={items} sales={sales} setItems={setItems} setSales={setSales} store={store} notify={notify} log={addLog} role={role} />),
+    raw: () => guard("import.use", <RawData items={items} setItems={setItems} setSales={setSales} setExpenses={setExpenses} notify={notify} log={addLog} />),
+    inventory: () => guard("inventory.view", <Inventory items={items} setItems={setItems} notify={notify} log={addLog} cats={cats} onAddCategory={addCategory} role={role} />),
+    alerts: () => guard("alerts.view", <Alerts items={items} goInventory={() => setTab("inventory")} cats={cats} />),
+    barcode: () => guard("barcode.use", <BarcodeCreator items={items} setItems={setItems} store={store} notify={notify} log={addLog} />),
+    sales: () => guard("sales.view", <SalesHistory sales={sales} items={items} setSales={setSales} setItems={setItems} store={store} notify={notify} log={addLog} role={role} />),
+    finance: () => (tabEnabled("finance") ? guard("finance.view", <Finance sales={sales} expenses={expenses} />) : dashboard),
+    stats: () => guard("stats.view", <Stats sales={sales} expenses={expenses} items={items} />),
+    udhari: () => guard("udhari.manage", <Udhari sales={sales} setSales={setSales} notify={notify} log={addLog} />),
+    expense: () => guard("expenses.manage", <Expenses expenses={expenses} setExpenses={setExpenses} notify={notify} log={addLog} />),
+    vendorbills: () => guard("vendorBills.manage", <VendorBills bills={bills} setBills={setBills} setDailyBills={setDailyBills} online={online} notify={notify} log={addLog} />),
+    logs: () => guard("logs.view", <Logs logs={logs} setLogs={setLogs} notify={notify} />),
+    changelog: () => <Changelog />,
+    settings: () => guard("settings.manage", <StoreConfig config={config} setConfig={setConfig} notify={notify} log={addLog} user={user} role={role} />),
+    admin: () => guard("settings.manage", <Admin items={items} setItems={setItems} setSales={setSales} setExpenses={setExpenses} setLogs={setLogs} user={user} notify={notify} log={addLog} />),
+  };
+  const view = (VIEWS[tab] || VIEWS.dashboard)();
 
   return (
     <div className="app" style={S.app}>
@@ -877,7 +1103,7 @@ function StoreManager({ user, onLogout }) {
             <div style={{ fontSize: 10.5, color: "#9DB5A8", lineHeight: 1.3 }}>{store.address}</div>
           </div>
         </div>
-        {TOP_TABS.filter(([k]) => tabEnabled(k)).map(([k, ic, label]) => (
+        {myTopTabs.map(([k, ic, label]) => (
           <button key={k} className={"navbtn" + (tab === k ? " active" : "")} onClick={() => setTab(k)}>
             <span style={{ width: 22, display: "inline-block", textAlign: "center" }}>{ic}</span> {label}
             {k === "inventory" && lowStock.length > 0 && (
@@ -886,17 +1112,20 @@ function StoreManager({ user, onLogout }) {
           </button>
         ))}
         {/* "Other" group — collapses the secondary sections. Auto-opens when one of its
-            tabs is active so the current page is always visible in the rail. */}
-        <button
-          className={"navbtn" + (showOther ? " active" : "")}
-          onClick={() => setOtherOpen((o) => !o)}
-          aria-expanded={showOther}
-        >
-          <span style={{ width: 22, display: "inline-block", textAlign: "center" }}>⋯</span> Other
-          <span style={{ marginLeft: "auto", fontSize: 11, opacity: 0.8 }}>{showOther ? "▾" : "▸"}</span>
-          {!showOther && alertCount > 0 && <span style={S.badge}>{alertCount}</span>}
-        </button>
-        {showOther && OTHER_TABS.filter(([k]) => tabEnabled(k)).map(([k, ic, label]) => (
+            tabs is active so the current page is always visible in the rail. Hidden outright
+            when this role has nothing in it, rather than left as an empty dead-end. */}
+        {myOtherTabs.length > 0 && (
+          <button
+            className={"navbtn" + (showOther ? " active" : "")}
+            onClick={() => setOtherOpen((o) => !o)}
+            aria-expanded={showOther}
+          >
+            <span style={{ width: 22, display: "inline-block", textAlign: "center" }}>⋯</span> Other
+            <span style={{ marginLeft: "auto", fontSize: 11, opacity: 0.8 }}>{showOther ? "▾" : "▸"}</span>
+            {!showOther && alertCount > 0 && <span style={S.badge}>{alertCount}</span>}
+          </button>
+        )}
+        {showOther && myOtherTabs.map(([k, ic, label]) => (
           <button key={k} className={"navbtn sub" + (tab === k ? " active" : "")} onClick={() => setTab(k)}>
             <span style={{ width: 22, display: "inline-block", textAlign: "center" }}>{ic}</span> {label}
             {k === "alerts" && alertCount > 0 && (
@@ -904,18 +1133,24 @@ function StoreManager({ user, onLogout }) {
             )}
           </button>
         ))}
-        <div style={{ marginTop: "auto", padding: "8px 8px 4px" }}>
-          <div style={{ fontSize: 10.5, color: "#6E8A7C", textTransform: "uppercase", letterSpacing: ".06em", padding: "0 6px 4px" }}>Backup</div>
-          <div style={{ display: "flex", gap: 6 }}>
-            <button className="navbtn" style={{ border: "1px solid #2A5A3E", justifyContent: "center" }} onClick={() => exportData("json")}>⬇ JSON</button>
-            <button className="navbtn" style={{ border: "1px solid #2A5A3E", justifyContent: "center" }} onClick={() => exportData("xlsx")}>⬇ XLSX</button>
+        {/* Backup/Restore is owner-only: a restore rewrites the whole tree, and an export
+            hands the entire salon's books to whoever is holding the phone. */}
+        {can(role, "backup.use") && (
+          <div style={{ marginTop: "auto", padding: "8px 8px 4px" }}>
+            <div style={{ fontSize: 10.5, color: "#6E8A7C", textTransform: "uppercase", letterSpacing: ".06em", padding: "0 6px 4px" }}>Backup</div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button className="navbtn" style={{ border: "1px solid #2A5A3E", justifyContent: "center" }} onClick={() => exportData("json")}>⬇ JSON</button>
+              <button className="navbtn" style={{ border: "1px solid #2A5A3E", justifyContent: "center" }} onClick={() => exportData("xlsx")}>⬇ XLSX</button>
+            </div>
+            <label className="navbtn" style={{ border: "1px solid #2A5A3E", justifyContent: "center", cursor: "pointer", marginTop: 6 }}>
+              ⬆ Restore (JSON / XLSX)
+              <input type="file" accept=".json,.xlsx,.xls,application/json" onChange={importData} style={{ display: "none" }} />
+            </label>
           </div>
-          <label className="navbtn" style={{ border: "1px solid #2A5A3E", justifyContent: "center", cursor: "pointer", marginTop: 6 }}>
-            ⬆ Restore (JSON / XLSX)
-            <input type="file" accept=".json,.xlsx,.xls,application/json" onChange={importData} style={{ display: "none" }} />
-          </label>
-        </div>
-        <div style={{ display: "flex", gap: 6, padding: "8px 8px 4px" }}>
+        )}
+        {/* Pushes the footer down when the Backup block above (which normally carries the
+            margin-top:auto) is hidden for this role. */}
+        <div style={{ display: "flex", gap: 6, padding: "8px 8px 4px", marginTop: can(role, "backup.use") ? 0 : "auto" }}>
           <button className="navbtn" style={{ border: "1px solid #2A5A3E", justifyContent: "center" }} onClick={resetMyPassword}>🔑 Reset</button>
           <button className="navbtn" style={{ border: "1px solid #2A5A3E", justifyContent: "center" }} onClick={onLogout}>⎋ Logout</button>
         </div>
@@ -925,57 +1160,32 @@ function StoreManager({ user, onLogout }) {
             {online ? "Online · syncing live" : "Offline · saved on this device"}
           </span>
           <br />
-          {user?.email ? <>Signed in as {user.email}.<br /></> : null}Back up regularly.
+          {user?.email ? <>Signed in as {user.email} · {ROLE_LABELS[role]}.<br /></> : null}
+          {can(role, "backup.use") ? "Back up regularly." : null}
         </div>
       </nav>
 
       {/* main */}
       <main className="main" style={S.main}>
-        {!loaded ? (
-          <div style={{ padding: 40, color: "#667" }}>Loading store data…</div>
-        ) : tab === "dashboard" ? (
-          <Dashboard items={items} sales={sales} lowStock={lowStock} goBilling={() => setTab("billing")} />
-        ) : tab === "billing" ? (
-          <Billing items={items} sales={sales} setItems={setItems} setSales={setSales} store={store} notify={notify} log={addLog} />
-        ) : tab === "raw" ? (
-          <RawData items={items} setItems={setItems} setSales={setSales} setExpenses={setExpenses} notify={notify} log={addLog} />
-        ) : tab === "inventory" ? (
-          <Inventory items={items} setItems={setItems} notify={notify} log={addLog} cats={cats} onAddCategory={addCategory} />
-        ) : tab === "alerts" ? (
-          <Alerts items={items} goInventory={() => setTab("inventory")} cats={cats} />
-        ) : tab === "barcode" ? (
-          <BarcodeCreator items={items} setItems={setItems} store={store} notify={notify} log={addLog} />
-        ) : tab === "sales" ? (
-          <SalesHistory sales={sales} items={items} setSales={setSales} setItems={setItems} store={store} notify={notify} log={addLog} />
-        ) : tab === "finance" && tabEnabled("finance") ? (
-          <Finance sales={sales} expenses={expenses} />
-        ) : tab === "stats" ? (
-          <Stats sales={sales} expenses={expenses} items={items} />
-        ) : tab === "udhari" ? (
-          <Udhari sales={sales} setSales={setSales} notify={notify} log={addLog} />
-        ) : tab === "expense" ? (
-          <Expenses expenses={expenses} setExpenses={setExpenses} notify={notify} log={addLog} />
-        ) : tab === "vendorbills" ? (
-          <VendorBills bills={bills} setBills={setBills} setDailyBills={setDailyBills} goDailyBills={() => setTab("dailybills")} online={online} notify={notify} log={addLog} />
-        ) : tab === "dailybills" ? (
-          <DailyBills dailyBills={dailyBills} setDailyBills={setDailyBills} bills={bills} setBills={setBills} goVendorBills={() => setTab("vendorbills")} notify={notify} log={addLog} />
-        ) : tab === "logs" ? (
-          <Logs logs={logs} setLogs={setLogs} notify={notify} />
-        ) : tab === "changelog" ? (
-          <Changelog />
-        ) : tab === "settings" ? (
-          <StoreConfig config={config} setConfig={setConfig} notify={notify} log={addLog} />
-        ) : tab === "admin" ? (
-          <Admin items={items} setItems={setItems} setSales={setSales} setExpenses={setExpenses} setLogs={setLogs} user={user} notify={notify} log={addLog} />
-        ) : (
-          <Dashboard items={items} sales={sales} lowStock={lowStock} goBilling={() => setTab("billing")} />
-        )}
+        {!loaded ? <div style={{ padding: 40, color: "#667" }}>Loading salon data…</div> : view}
       </main>
 
       {toast && <div style={S.toast}>{toast}</div>}
     </div>
   );
 }
+
+// Shown when a role reaches a view it may not have. In practice the nav never offers the tab,
+// so this is the backstop for a stale tab, a live demotion, or a deep link — not a normal path.
+const NoAccess = ({ role }) => (
+  <div style={{ padding: "48px 24px", textAlign: "center", color: "#667" }}>
+    <div style={{ fontSize: 30, marginBottom: 8 }}>🔒</div>
+    <div style={{ fontWeight: 700, fontSize: 16, color: "#334", marginBottom: 6 }}>Not available for your role</div>
+    <p style={{ fontSize: 13, lineHeight: 1.6, maxWidth: 380, margin: "0 auto" }}>
+      You're signed in as <strong>{ROLE_LABELS[role] || "an unknown role"}</strong>. Ask the owner if you need access to this section.
+    </p>
+  </div>
+);
 
 // ---------- Dashboard ----------
 function Dashboard({ items, sales, lowStock, goBilling }) {
@@ -4572,7 +4782,7 @@ const STATUS_COLORS = { paid: "#1B5E43", partial: "#B0762A", unpaid: "#C44536" }
 const isImageType = (t, name) => /^image\//i.test(t || "") || /\.(jpe?g|png|webp|gif|bmp|heic)$/i.test(name || "");
 const outstandingOf = (b) => (b.status === "paid" ? 0 : b.status === "partial" ? Math.max(0, (+b.amount || 0) - (+b.paidAmount || 0)) : (+b.amount || 0));
 
-function VendorBills({ bills, setBills, setDailyBills, goDailyBills, online, notify, log }) {
+function VendorBills({ bills, setBills, setDailyBills, online, notify, log }) {
   const blank = { vendor: "", date: todayStr(), amount: "", category: BILL_CATEGORIES[0], status: "unpaid", paidAmount: "", dueDate: "" };
   const [form, setForm] = useState(blank);
   const [editId, setEditId] = useState(null);
@@ -4636,11 +4846,11 @@ function VendorBills({ bills, setBills, setDailyBills, goDailyBills, online, not
   };
 
   const startEdit = (b) => {
-    // Daily-need bills are authored in their own section (single source of truth); redirect the
-    // edit there so the two views can't drift.
+    // Legacy guard: the grocery core had a separate Daily-Need Bills section that mirrored into
+    // this slice, and those records must not be edited from here. Salon Manager doesn't ship
+    // that section, so this only ever fires for data carried in from a grocery-era backup.
     if (b.source === "daily-need") {
-      notify("This bill syncs from Daily-Need Bills — edit it there.");
-      goDailyBills?.();
+      notify("This bill was synced from Daily-Need Bills and can't be edited here.");
       return;
     }
     setEditId(b.id);
@@ -4837,327 +5047,6 @@ function VendorBills({ bills, setBills, setDailyBills, goDailyBills, online, not
   );
 }
 
-// ---------- Daily-Need Bills (auto-syncs into Vendor Bills) ----------
-// Day-to-day vendor bills for daily-need purchases. Each entry is the single source of truth
-// and MIRRORS into the vendorBills slice (same id, source:"daily-need") so the Vendor Bills
-// view shows it too — no double entry. See src/lib/dailyBills.js for the pure mappers.
-const METHOD_COLORS = { Cash: "#1B5E43", UPI: "#2A6FB0", "Bank Transfer": "#7A5AB0", Credit: "#C44536", Cheque: "#B0762A" };
-const DAILY_STATUS_COLORS = { Paid: "#1B5E43", Pending: "#C44536", Partial: "#B0762A" };
-
-function DailyBills({ dailyBills, setDailyBills, bills, setBills, goVendorBills, notify, log }) {
-  const blank = useMemo(() => blankDailyBill(todayStr()), []);
-  const [form, setForm] = useState(blank);
-  const [editId, setEditId] = useState(null);
-  const [err, setErr] = useState("");
-  // filters
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
-  const [vq, setVq] = useState("");
-  const [methodF, setMethodF] = useState("all");
-  const [statusF, setStatusF] = useState("all");
-  // sort
-  const [sortKey, setSortKey] = useState("date");
-  const [sortDir, setSortDir] = useState("desc");
-
-  const resetForm = () => { setForm(blankDailyBill(todayStr())); setEditId(null); setErr(""); };
-
-  const save = () => {
-    const msg = validateDailyBill(form);
-    if (msg) { setErr(msg); return notify(msg); }
-    setErr("");
-    const id = editId || uid();
-    const now = Date.now();
-    const existing = editId ? dailyBills.find((d) => d.id === editId) : null;
-    const rec = makeDailyBill(form, { id, now, existing });
-    const mirror = dailyToVendorBill(rec);
-    if (editId) {
-      setDailyBills((list) => list.map((d) => (d.id === editId ? rec : d)));
-      setBills((list) => upsertMirror(list, mirror)); // keep the Vendor Bills mirror in lockstep
-      log("bill", `Edited daily-need bill — ${rec.vendorName} · ${INR(rec.billAmount)}`);
-      notify("Daily-need bill updated · synced to Vendor Bills");
-    } else {
-      setDailyBills((list) => [...list, rec]);
-      setBills((list) => upsertMirror(list, mirror));
-      log("bill", `Added daily-need bill — ${rec.vendorName} · ${INR(rec.billAmount)}`);
-      notify("Daily-need bill saved · synced to Vendor Bills");
-    }
-    resetForm();
-  };
-
-  const startEdit = (d) => {
-    setEditId(d.id);
-    setForm({
-      category: d.category || DAILY_CATEGORIES[0], itemName: d.itemName || "", qty: d.qty ? String(d.qty) : "", unitPrice: d.unitPrice ? String(d.unitPrice) : "",
-      vendorName: d.vendorName || "", billAmount: String(d.billAmount ?? ""),
-      paymentMethod: d.paymentMethod || PAYMENT_METHODS[0], paymentStatus: d.paymentStatus || PAYMENT_STATUS[0],
-      paidAmount: String(d.paidAmount ?? ""), date: d.date || todayStr(),
-      billNumber: d.billNumber || "", notes: d.notes || "",
-    });
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  };
-
-  const del = (d) => {
-    if (!confirm(`Delete daily-need bill from “${d.vendorName}” (${INR(d.billAmount)})? It will also be removed from Vendor Bills.`)) return;
-    setDailyBills((list) => list.filter((x) => x.id !== d.id));
-    setBills((list) => list.filter((x) => x.id !== d.id)); // mirror shares the id → drops both
-    if (editId === d.id) resetForm();
-    log("bill", `Deleted daily-need bill — ${d.vendorName} · ${INR(d.billAmount)}`);
-    notify("Daily-need bill deleted");
-  };
-
-  // Vendor autocomplete: names already used in daily-need OR the wider Vendor Bills list.
-  const vendorSuggestions = useMemo(() => {
-    const set = new Set();
-    dailyBills.forEach((d) => d.vendorName && set.add(d.vendorName));
-    bills.forEach((b) => b.vendor && set.add(b.vendor));
-    return [...set].sort((a, b) => a.localeCompare(b));
-  }, [dailyBills, bills]);
-
-  // Item suggestions are driven by the chosen category, plus any items already used under it.
-  const catItems = useMemo(() => {
-    const set = new Set(itemsForCategory(form.category));
-    dailyBills.forEach((d) => { if (d.category === form.category && d.itemName) set.add(d.itemName); });
-    return [...set];
-  }, [form.category, dailyBills]);
-
-  // When both Qty and Price are set, the total is qty × price and the Amount field auto-reflects
-  // it (read-only); otherwise the owner types the amount directly.
-  const autoTotal = lineTotal(form.qty, form.unitPrice);
-
-  const filtered = useMemo(() => dailyBills.filter((d) =>
-    (!from || d.date >= from) && (!to || d.date <= to) &&
-    (!vq.trim() || (d.vendorName || "").toLowerCase().includes(vq.trim().toLowerCase())) &&
-    (methodF === "all" || d.paymentMethod === methodF) &&
-    (statusF === "all" || d.paymentStatus === statusF)
-  ), [dailyBills, from, to, vq, methodF, statusF]);
-
-  const toggleSort = (k) => {
-    if (sortKey === k) setSortDir((s) => (s === "asc" ? "desc" : "asc"));
-    else { setSortKey(k); setSortDir(k === "billAmount" || k === "date" ? "desc" : "asc"); }
-  };
-  const sorted = useMemo(() => {
-    const dir = sortDir === "asc" ? 1 : -1;
-    return [...filtered].sort((a, b) => {
-      let av, bv;
-      if (sortKey === "billAmount") { av = +a.billAmount || 0; bv = +b.billAmount || 0; }
-      else { av = String(a[sortKey] || "").toLowerCase(); bv = String(b[sortKey] || "").toLowerCase(); }
-      if (av < bv) return -dir;
-      if (av > bv) return dir;
-      return (b.createdAt || 0) - (a.createdAt || 0); // stable newest-first tiebreak
-    });
-  }, [filtered, sortKey, sortDir]);
-
-  const totalSpent = money(filtered.reduce((a, d) => a + (+d.billAmount || 0), 0));
-  const totalPending = money(filtered.reduce((a, d) => a + dailyOutstanding(d), 0));
-
-  const spendByDay = useMemo(() => {
-    const m = {};
-    filtered.forEach((d) => { const k = d.date; if (k) m[k] = (m[k] || 0) + (+d.billAmount || 0); });
-    return Object.entries(m).sort((a, b) => (a[0] < b[0] ? -1 : 1))
-      .map(([k, v]) => ({ label: new Date(k + "T00:00").toLocaleDateString("en-IN", { day: "numeric", month: "short" }), amount: money(v) }));
-  }, [filtered]);
-  const topVendors = useMemo(() => {
-    const m = {};
-    filtered.forEach((d) => { const v = d.vendorName || "—"; m[v] = (m[v] || 0) + (+d.billAmount || 0); });
-    return Object.entries(m).map(([name, value]) => ({ name, value: money(value) })).sort((a, b) => b.value - a.value).slice(0, 8);
-  }, [filtered]);
-  const byMethod = useMemo(() => {
-    const m = {};
-    filtered.forEach((d) => { const k = d.paymentMethod || "—"; m[k] = (m[k] || 0) + (+d.billAmount || 0); });
-    return Object.entries(m).map(([name, value]) => ({ name, value: money(value) })).filter((r) => r.value > 0);
-  }, [filtered]);
-  const byStatus = useMemo(() => {
-    const order = { Paid: 0, Partial: 1, Pending: 2 };
-    const m = {};
-    filtered.forEach((d) => { const k = d.paymentStatus || "—"; m[k] = (m[k] || 0) + (+d.billAmount || 0); });
-    return Object.entries(m).map(([name, value]) => ({ name, value: money(value) })).filter((r) => r.value > 0)
-      .sort((a, b) => (order[a.name] ?? 9) - (order[b.name] ?? 9));
-  }, [filtered]);
-
-  const setMonth = (mv) => { if (!mv) { setFrom(""); setTo(""); return; } setFrom(mv + "-01"); const d = new Date(+mv.slice(0, 4), +mv.slice(5, 7), 0); setTo(dateStr(d)); };
-  const fmtDate = (d) => (d ? new Date(d + "T00:00").toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }) : "—");
-  const arrow = (k) => (sortKey === k ? (sortDir === "asc" ? " ▲" : " ▼") : "");
-  const SortTh = ({ k, label, style }) => (
-    <th style={{ cursor: "pointer", userSelect: "none", ...style }} onClick={() => toggleSort(k)} title="Click to sort">{label}{arrow(k)}</th>
-  );
-
-  return (
-    <div>
-      <Header title="Daily-Need Bills" sub="Track day-to-day vendor bills for daily-need purchases — auto-synced into Vendor Bills">
-        <span style={{ fontSize: 11.5, color: "#0E7C86" }}>🧺 Each entry also appears in Vendor Bills</span>
-      </Header>
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1.5fr", gap: 16, alignItems: "start" }}>
-        {/* add / edit form */}
-        <section style={S.panel}>
-          <div style={S.panelHead}>{editId ? "Edit daily-need bill" : "New daily-need bill"}</div>
-          {/* Category first — it drives the item suggestions below. Switching category clears the item. */}
-          <Field label="Category">
-            <select className="input" value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value, itemName: "" })}>
-              {DAILY_CATEGORIES.map((c) => <option key={c}>{c}</option>)}
-            </select>
-          </Field>
-          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: 10 }}>
-            <Field label="Item">
-              <input className="input" list="dnb-items" value={form.itemName} onChange={(e) => setForm({ ...form, itemName: e.target.value })} placeholder={catItems.length ? "Pick or type an item…" : "Type an item…"} />
-              <datalist id="dnb-items">{catItems.map((it) => <option key={it} value={it} />)}</datalist>
-            </Field>
-            <Field label="Qty"><input className="input" type="number" min="0" step="any" value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} placeholder="e.g. 3" /></Field>
-            <Field label="Price (₹/qty)"><input className="input" type="number" min="0" step="0.01" value={form.unitPrice} onChange={(e) => setForm({ ...form, unitPrice: e.target.value })} placeholder="e.g. 30" /></Field>
-          </div>
-          {autoTotal > 0 && (
-            <div style={{ fontSize: 12, color: "#0E7C86", background: "#EAF7F8", border: "1px solid #C5E7EA", borderRadius: 8, padding: "6px 10px", marginTop: -2, marginBottom: 10 }}>
-              Total = {form.qty} × {INR(form.unitPrice)} = <b>{INR(autoTotal)}</b> — auto-filled into Amount below.
-            </div>
-          )}
-          <Field label="Vendor name">
-            <input className="input" list="dnb-vendors" value={form.vendorName} onChange={(e) => setForm({ ...form, vendorName: e.target.value })} placeholder="e.g. Amul Dairy" />
-            <datalist id="dnb-vendors">{vendorSuggestions.map((v) => <option key={v} value={v} />)}</datalist>
-          </Field>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <Field label="Bill date"><input className="input" type="date" max={todayStr()} value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></Field>
-            <Field label={autoTotal > 0 ? "Amount (₹) · auto" : "Amount (₹)"}>
-              <input className="input" type="number" min="0" step="0.01"
-                value={autoTotal > 0 ? autoTotal : form.billAmount}
-                readOnly={autoTotal > 0}
-                onChange={(e) => setForm({ ...form, billAmount: e.target.value })}
-                style={autoTotal > 0 ? { background: "#EEF5F0", color: "#23402F", fontWeight: 700 } : undefined}
-                title={autoTotal > 0 ? "Auto-calculated = Qty × Price. Clear Price or Qty to type a custom total." : undefined} />
-            </Field>
-            <Field label="Payment method">
-              <select className="input" value={form.paymentMethod} onChange={(e) => setForm({ ...form, paymentMethod: e.target.value })}>
-                {PAYMENT_METHODS.map((m) => <option key={m}>{m}</option>)}
-              </select>
-            </Field>
-            <Field label="Payment status">
-              <select className="input" value={form.paymentStatus} onChange={(e) => setForm({ ...form, paymentStatus: e.target.value })}>
-                {PAYMENT_STATUS.map((s) => <option key={s}>{s}</option>)}
-              </select>
-            </Field>
-            {form.paymentStatus === "Partial" && <Field label="Paid so far (₹)"><input className="input" type="number" min="0" step="0.01" value={form.paidAmount} onChange={(e) => setForm({ ...form, paidAmount: e.target.value })} /></Field>}
-            <Field label="Bill number (optional)"><input className="input" value={form.billNumber} onChange={(e) => setForm({ ...form, billNumber: e.target.value })} placeholder="e.g. INV-204" /></Field>
-          </div>
-          <Field label="Notes (optional)"><textarea className="input" rows={2} style={{ resize: "vertical" }} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Anything to remember…" /></Field>
-          {err && <div style={{ fontSize: 12, color: "#C44536", background: "#FBEDEB", border: "1px solid #E2B6B0", borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>{err}</div>}
-          <button className="btn primary big" style={{ width: "100%" }} onClick={save}>{editId ? "Save changes" : "Save bill"}</button>
-          {editId && <button className="btn ghost" style={{ width: "100%", marginTop: 8 }} onClick={resetForm}>Cancel edit</button>}
-        </section>
-
-        {/* list + filters */}
-        <section style={S.panel}>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
-            <label style={{ fontSize: 12, color: "#6B7E74" }}>From <input type="date" className="input" style={{ width: "auto", marginLeft: 4 }} value={from} max={to || todayStr()} onChange={(e) => setFrom(e.target.value)} /></label>
-            <label style={{ fontSize: 12, color: "#6B7E74" }}>To <input type="date" className="input" style={{ width: "auto", marginLeft: 4 }} value={to} max={todayStr()} onChange={(e) => setTo(e.target.value)} /></label>
-            <label style={{ fontSize: 12, color: "#6B7E74" }}>Month <input type="month" className="input" style={{ width: "auto", marginLeft: 4 }} max={todayStr().slice(0, 7)} onChange={(e) => setMonth(e.target.value)} /></label>
-            <select className="input" style={{ width: "auto" }} value={methodF} onChange={(e) => setMethodF(e.target.value)}>
-              <option value="all">All methods</option>
-              {PAYMENT_METHODS.map((m) => <option key={m}>{m}</option>)}
-            </select>
-            <select className="input" style={{ width: "auto" }} value={statusF} onChange={(e) => setStatusF(e.target.value)}>
-              <option value="all">All status</option>
-              {PAYMENT_STATUS.map((s) => <option key={s}>{s}</option>)}
-            </select>
-            <input className="input" style={{ flex: 1, minWidth: 120 }} placeholder="Search vendor…" value={vq} onChange={(e) => setVq(e.target.value)} />
-            {(from || to || vq || methodF !== "all" || statusF !== "all") && <button className="btn ghost small" onClick={() => { setFrom(""); setTo(""); setVq(""); setMethodF("all"); setStatusF("all"); }}>Clear</button>}
-          </div>
-
-          <div style={S.cards}>
-            <Card label="Total spent" value={INR(totalSpent)} sub={filtered.length + (filtered.length === 1 ? " bill" : " bills")} />
-            <Card label="Pending" value={INR(totalPending)} sub="unpaid + partial" accent />
-            <Card label="Entries" value={String(filtered.length)} sub="in selected range" />
-          </div>
-
-          {sorted.length === 0 ? (
-            <Empty text={dailyBills.length === 0 ? "No daily-need bills yet. Add your first one on the left." : "No bills match these filters."} />
-          ) : (
-            <table className="tbl" style={{ marginTop: 12 }}>
-              <thead><tr>
-                <SortTh k="date" label="Date" style={{ width: 96 }} />
-                <SortTh k="category" label="Category" />
-                <SortTh k="itemName" label="Item" />
-                <SortTh k="vendorName" label="Vendor" />
-                <SortTh k="billAmount" label="Amount" style={{ textAlign: "right" }} />
-                <SortTh k="paymentMethod" label="Method" />
-                <SortTh k="paymentStatus" label="Status" />
-                <th style={{ width: 78 }}></th>
-              </tr></thead>
-              <tbody>
-                {sorted.map((d) => {
-                  const out = dailyOutstanding(d);
-                  return (
-                    <tr key={d.id}>
-                      <td style={{ whiteSpace: "nowrap", color: "#677" }}>{fmtDate(d.date)}</td>
-                      <td style={{ color: "#677", fontSize: 12.5 }}>{d.category || "—"}</td>
-                      <td>{d.itemName ? <>{d.itemName}{d.qty ? <span style={{ color: "#9AA", fontWeight: 600 }}> ×{d.qty}</span> : null}{d.unitPrice ? <span style={{ color: "#9AA", fontWeight: 500 }}> @{INR(d.unitPrice)}</span> : null}</> : <span style={{ color: "#AAB" }}>—</span>}</td>
-                      <td style={{ fontWeight: 600 }}>{d.vendorName}{d.billNumber ? <span style={{ color: "#9AA", fontWeight: 500, fontSize: 11.5 }}> · {d.billNumber}</span> : null}</td>
-                      <td style={{ textAlign: "right", fontWeight: 700 }}>{INR(d.billAmount)}</td>
-                      <td style={{ color: "#677", fontSize: 12.5, whiteSpace: "nowrap" }}>{d.paymentMethod || "—"}</td>
-                      <td style={{ whiteSpace: "nowrap" }}>
-                        <span style={{ fontSize: 10.5, fontWeight: 800, textTransform: "uppercase", color: DAILY_STATUS_COLORS[d.paymentStatus] || "#789", border: `1px solid ${DAILY_STATUS_COLORS[d.paymentStatus] || "#bbb"}`, borderRadius: 6, padding: "0 6px" }}>{d.paymentStatus || "—"}</span>
-                        {out > 0 && <div style={{ fontSize: 10.5, color: "#C44536" }}>{INR(out)} due</div>}
-                      </td>
-                      <td style={{ whiteSpace: "nowrap" }}>
-                        <button className="btn small ghost" aria-label={"Edit " + d.vendorName} onClick={() => startEdit(d)}>✎</button>{" "}
-                        <button className="btn small danger" aria-label={"Delete " + d.vendorName} onClick={() => del(d)}>🗑</button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
-          {sorted.length > 0 && goVendorBills && (
-            <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: 10 }}>
-              These bills also appear in <button className="btn small ghost" style={{ padding: "2px 8px" }} onClick={goVendorBills}>Vendor Bills →</button>
-            </div>
-          )}
-        </section>
-      </div>
-
-      {filtered.length > 0 && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 16 }}>
-          <ChartCard title="Spend over time (by day)">
-            <BarChart data={spendByDay} margin={{ top: 8, right: 8, left: -8, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#EEF3EE" />
-              <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#678" }} interval="preserveStartEnd" minTickGap={16} />
-              <YAxis tick={{ fontSize: 11, fill: "#678" }} tickFormatter={inrTick} width={48} />
-              <Tooltip formatter={(v) => INR(v)} />
-              <Bar dataKey="amount" name="Spend" fill="#0E7C86" radius={[3, 3, 0, 0]} />
-            </BarChart>
-          </ChartCard>
-          <ChartCard title="Top vendors by spend">
-            <BarChart data={topVendors} layout="vertical" margin={{ top: 4, right: 12, left: 8, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#EEF3EE" horizontal={false} />
-              <XAxis type="number" tick={{ fontSize: 11, fill: "#678" }} tickFormatter={inrTick} />
-              <YAxis type="category" dataKey="name" tick={{ fontSize: 10.5, fill: "#465" }} width={110} />
-              <Tooltip formatter={(v) => INR(v)} />
-              <Bar dataKey="value" name="Spend" fill="#2A6FB0" radius={[0, 3, 3, 0]} />
-            </BarChart>
-          </ChartCard>
-          <ChartCard title="Payment method breakdown">
-            <PieChart>
-              <Pie data={byMethod} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={45} outerRadius={78} paddingAngle={2} stroke="none">
-                {byMethod.map((r) => <Cell key={r.name} fill={METHOD_COLORS[r.name] || "#8A9C90"} />)}
-              </Pie>
-              <Tooltip formatter={(v, n) => [INR(v), n]} />
-              <Legend wrapperStyle={{ fontSize: 12 }} />
-            </PieChart>
-          </ChartCard>
-          <ChartCard title="Paid vs Pending vs Partial">
-            <PieChart>
-              <Pie data={byStatus} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={45} outerRadius={78} paddingAngle={2} stroke="none">
-                {byStatus.map((r) => <Cell key={r.name} fill={DAILY_STATUS_COLORS[r.name] || "#8A9C90"} />)}
-              </Pie>
-              <Tooltip formatter={(v, n) => [INR(v), n]} />
-              <Legend wrapperStyle={{ fontSize: 12 }} />
-            </PieChart>
-          </ChartCard>
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ---------- Add Expense (own page) ----------
 function Expenses({ expenses, setExpenses, notify, log }) {
   const [exp, setExp] = useState({ desc: "", amount: "", date: todayStr() });
@@ -5269,7 +5158,7 @@ function Expenses({ expenses, setExpenses, notify, log }) {
 // hard-coded now live in `config` (synced at shop/config across every device). This screen edits
 // a local draft and commits it via setConfig on Save; effectiveStore() layers it over the
 // built-in defaults everywhere the identity is shown (sidebar, login card, printed receipt).
-function StoreConfig({ config, setConfig, notify, log }) {
+function StoreConfig({ config, setConfig, notify, log, user, role }) {
   const toDraft = (c = {}) => ({
     name: c.name || "", tagline: c.tagline || "", address: c.address || "",
     phone: c.phone || "", pcIp: c.pcIp || "", logo: c.logo || "", paymentQr: c.paymentQr || "",
@@ -5309,9 +5198,13 @@ function StoreConfig({ config, setConfig, notify, log }) {
       return notify("⚠ Enter a valid IP like 192.168.1.50 (or 192.168.1.50:9100), or leave it blank");
     }
     if (draft.upiId.trim() && !isValidUpiId(draft.upiId)) {
-      return notify("⚠ Enter a valid UPI ID like prakashmart@okhdfcbank, or leave it blank");
+      return notify("⚠ Enter a valid UPI ID like mysalon@okhdfcbank, or leave it blank");
     }
+    // Spread the existing config first: shop/config is a shared singleton that holds more than
+    // this form edits (loyaltyConfig lives here too). Rebuilding it from the draft alone would
+    // silently wipe whatever this form doesn't know about.
     const next = {
+      ...config,
       name: draft.name.trim(), tagline: draft.tagline.trim(), address: draft.address.trim(),
       phone: draft.phone.trim(), pcIp: draft.pcIp.trim(), logo: draft.logo || "", paymentQr: draft.paymentQr || "",
       upiId: draft.upiId.trim(), upiName: draft.upiName.trim(),
@@ -5320,18 +5213,21 @@ function StoreConfig({ config, setConfig, notify, log }) {
     savedRef.current = JSON.stringify(snap);
     setDraft(snap);
     setConfig(next);
-    log?.("settings", "Updated store settings");
-    notify("✓ Store settings saved");
+    log?.("settings", "Updated salon settings");
+    notify("✓ Salon settings saved");
   };
 
   const resetDefaults = () => {
-    if (!confirm("Reset every store setting back to the app defaults? A custom logo and payment QR will be removed.")) return;
+    if (!confirm("Reset the salon's identity settings back to the app defaults? A custom logo and payment QR will be removed.")) return;
     const snap = toDraft({});
     savedRef.current = JSON.stringify(snap);
     setDraft(snap);
-    setConfig({});
-    log?.("settings", "Reset store settings to defaults");
-    notify("Store settings reset to defaults");
+    // Blank only the identity fields this form owns; anything else in the singleton (loyalty
+    // rules, and whatever a later version adds) is untouched. "Reset settings" must not quietly
+    // reset the loyalty scheme the salon's customers have points under.
+    setConfig((c) => ({ ...c, ...toDraft({}) }));
+    log?.("settings", "Reset salon identity settings to defaults");
+    notify("Salon settings reset to defaults");
   };
 
   const kb = (dataUrl) => (dataUrl ? Math.round(dataUrl.length / 1024) : 0);
@@ -5367,7 +5263,7 @@ function StoreConfig({ config, setConfig, notify, log }) {
 
   return (
     <div>
-      <Header title="Store Settings" sub="Shop name, address, logo and other details used across the app and on printed receipts.">
+      <Header title="Salon Settings" sub="Salon name, address, logo and other details used across the app and on printed receipts.">
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           {dirty && <span style={{ fontSize: 12, color: "#C9803A", fontWeight: 600 }}>Unsaved changes</span>}
           <button className="btn ghost" onClick={resetDefaults}>Reset to defaults</button>
@@ -5427,7 +5323,205 @@ function StoreConfig({ config, setConfig, notify, log }) {
           </div>
         </div>
       </section>
+
+      {can(role, "users.manage") && <Users user={user} notify={notify} log={log} />}
     </div>
+  );
+}
+
+// ---------- Settings → Users (owner only) ----------
+// Day-to-day staff access is managed from here, not from the Firebase console.
+//
+// Adding a user has to create a real Firebase Auth account, and the client SDK signs newly
+// created users straight in — which would boot the owner out of their own session mid-task. The
+// standard workaround is a SECOND, throwaway app instance: create the account on that, sign it
+// out, delete it. The owner's session lives on the primary app and is never touched. See
+// secondaryApp() in src/lib/firebase.js.
+//
+// The role each user gets is written to shop/users/<uid>, which is exactly what
+// database.rules.json reads back to authorise every request. This screen IS the access control.
+function Users({ user, notify, log }) {
+  const [users, setUsers] = useState(null); // null = still loading
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState({ email: "", name: "", pwd: "", role: "biller" });
+
+  useEffect(() => subscribeUsers(
+    (val) => { setUsers(val || {}); setErr(""); },
+    (e) => { console.error("users read failed", e); setErr("Couldn't load the user list."); setUsers({}); }
+  ), []);
+
+  const rows = useMemo(
+    () => Object.entries(users || {}).sort((a, b) =>
+      // Owners first, then alphabetically — the list reads as a hierarchy.
+      (a[1].role === "owner" ? 0 : 1) - (b[1].role === "owner" ? 0 : 1) ||
+      String(a[1].email || "").localeCompare(String(b[1].email || ""))
+    ),
+    [users]
+  );
+
+  const addUser = async () => {
+    const email = form.email.trim().toLowerCase();
+    const name = form.name.trim();
+    if (!email || !form.pwd) return setErr("Email and password are both required.");
+    if (form.pwd.length < 6) return setErr("Firebase requires a password of at least 6 characters.");
+    if (rows.some(([, u]) => String(u.email || "").toLowerCase() === email)) {
+      return setErr("That email is already on the team.");
+    }
+    setBusy(true); setErr("");
+    let secondary = null;
+    try {
+      // Create the account on a throwaway app so the owner's session survives.
+      secondary = secondaryApp();
+      const cred = await createUserWithEmailAndPassword(getAuth(secondary), email, form.pwd);
+      await writeUser(cred.user.uid, {
+        email, name, role: form.role, active: true, createdAt: todayStr(),
+      });
+      await signOut(getAuth(secondary));
+      log?.("settings", `Added user ${email} (${ROLE_LABELS[form.role]})`);
+      notify(`✓ ${email} can now sign in as ${ROLE_LABELS[form.role]}`);
+      setForm({ email: "", name: "", pwd: "", role: "biller" });
+      setAdding(false);
+    } catch (e) {
+      console.error("add user failed", e);
+      setErr(
+        e?.code === "auth/email-already-in-use"
+          ? "That email already has an account. If they used to work here, ask them to sign in — you can then set their role."
+          : e?.code === "auth/weak-password" ? "Password is too weak — use at least 6 characters."
+            : e?.code === "auth/invalid-email" ? "That doesn't look like a valid email address."
+              : authMessage(e?.code)
+      );
+    } finally {
+      // Always tear the throwaway instance down, or a later add would collide on the app name.
+      if (secondary) { try { await deleteApp(secondary); } catch { /* already gone */ } }
+      setBusy(false);
+    }
+  };
+
+  // Guarded by validateUserChange: the owner must not be able to demote or deactivate the last
+  // active owner, because nobody would be left who can manage users and there is no way back
+  // without a console visit.
+  const applyChange = async (uid, next, label) => {
+    const problem = validateUserChange(users, uid, next);
+    if (problem) return notify("⚠ " + problem);
+    try {
+      await updateUser(uid, next);
+      log?.("settings", `${label} — ${users[uid]?.email || uid}`);
+      notify("✓ " + label);
+    } catch (e) {
+      console.error("user update failed", e);
+      notify("⚠ Couldn't save that change.");
+    }
+  };
+
+  const changeRole = (uid, role) => {
+    const u = users[uid];
+    if (!u || u.role === role) return;
+    applyChange(uid, { role, active: u.active !== false }, `Role changed to ${ROLE_LABELS[role]}`);
+  };
+
+  const toggleActive = (uid) => {
+    const u = users[uid];
+    if (!u) return;
+    const active = u.active === false;
+    if (!active && !confirm(`Deactivate ${u.email}? They'll be signed out and won't be able to sign back in.`)) return;
+    applyChange(uid, { role: u.role, active }, active ? "User re-activated" : "User deactivated");
+  };
+
+  return (
+    <section style={{ ...S.panel, marginTop: 16 }}>
+      <div style={{ ...S.panelHead, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span>Users &amp; roles</span>
+        {!adding && <button className="btn primary" onClick={() => { setAdding(true); setErr(""); }}>+ Add user</button>}
+      </div>
+
+      <div style={{ fontSize: 12, color: "#6B7E74", lineHeight: 1.6, marginBottom: 12 }}>
+        {ROLES.map((r) => (
+          <div key={r}>
+            <b style={{ color: "#334" }}>{ROLE_LABELS[r]}</b> — {ROLE_DESCRIPTIONS[r]}
+          </div>
+        ))}
+      </div>
+
+      {adding && (
+        <div style={{ border: "1px solid #E2EAE3", borderRadius: 10, padding: 12, marginBottom: 14, background: "#F8FBF9" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="Email"><input className="input" type="email" autoComplete="off" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} /></Field>
+            <Field label="Name (optional)"><input className="input" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} /></Field>
+            <Field label="Temporary password">
+              <input className="input" type="text" autoComplete="off" value={form.pwd} onChange={(e) => setForm((f) => ({ ...f, pwd: e.target.value }))} />
+            </Field>
+            <Field label="Role">
+              <select className="input" value={form.role} onChange={(e) => setForm((f) => ({ ...f, role: e.target.value }))}>
+                {ROLES.map((r) => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
+              </select>
+            </Field>
+          </div>
+          <div style={{ fontSize: 11.5, color: "#8A9C90", marginBottom: 8 }}>
+            Share the password with them and ask them to change it from the sign-in screen's “Forgot password” link.
+          </div>
+          {err && <div style={{ color: "#B23B2E", fontSize: 12.5, marginBottom: 8 }}>{err}</div>}
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <button className="btn" onClick={() => { setAdding(false); setErr(""); }} disabled={busy}>Cancel</button>
+            <button className="btn primary" onClick={addUser} disabled={busy}>{busy ? "Creating…" : "Create user"}</button>
+          </div>
+        </div>
+      )}
+
+      {!adding && err && <div style={{ color: "#B23B2E", fontSize: 12.5, marginBottom: 8 }}>{err}</div>}
+
+      {users === null ? (
+        <div style={{ color: "#8A9C90", fontSize: 13 }}>Loading users…</div>
+      ) : rows.length === 0 ? (
+        <Empty text="No users yet." />
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table className="tbl" style={{ width: "100%" }}>
+            <thead>
+              <tr><th>Email</th><th>Name</th><th>Role</th><th>Status</th><th /></tr>
+            </thead>
+            <tbody>
+              {rows.map(([uid, u]) => {
+                const isMe = uid === user?.uid;
+                const inactive = u.active === false;
+                return (
+                  <tr key={uid} style={inactive ? { opacity: 0.55 } : undefined}>
+                    <td>
+                      {u.email}
+                      {isMe && <span style={{ fontSize: 11, color: "#8A9C90" }}> (you)</span>}
+                    </td>
+                    <td>{u.name || <span style={{ color: "#A8B8AE" }}>—</span>}</td>
+                    <td>
+                      <select
+                        className="input" style={{ padding: "4px 6px", fontSize: 12.5 }}
+                        value={u.role} onChange={(e) => changeRole(uid, e.target.value)}
+                      >
+                        {ROLES.map((r) => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
+                      </select>
+                    </td>
+                    <td style={{ color: inactive ? "#C44536" : "#1B5E43", fontWeight: 600, fontSize: 12.5 }}>
+                      {inactive ? "Deactivated" : "Active"}
+                    </td>
+                    <td style={{ textAlign: "right" }}>
+                      <button className="btn ghost" style={{ fontSize: 12 }} onClick={() => toggleActive(uid)}>
+                        {inactive ? "Re-activate" : "Deactivate"}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: 10, lineHeight: 1.6 }}>
+        Deactivating keeps the person's history intact and blocks them at the database, not just in
+        the app. Removing an account entirely is a Firebase console job — deactivating is almost
+        always what you want.
+      </div>
+    </section>
   );
 }
 

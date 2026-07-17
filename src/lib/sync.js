@@ -12,7 +12,7 @@
 //
 // The React layer keeps working with plain arrays; this module is the only array↔map bridge.
 
-import { ref, onValue, set, update } from "firebase/database";
+import { ref, onValue, set, update, get } from "firebase/database";
 import { db } from "./firebase.js";
 import { can } from "./roles.js";
 
@@ -189,6 +189,13 @@ export const subscribeOwnUser = (uid, onData, onError) =>
 
 export const writeUser = (uid, record) => set(ref(db, `${USERS_PATH}/${uid}`), sanitize(record));
 export const updateUser = (uid, fields) => update(ref(db, `${USERS_PATH}/${uid}`), sanitize(fields));
+
+// One-shot read of the whole users node, used ONLY to answer "is this shop still un-claimed?"
+// during bootstrap. The rules let any authenticated user read shop/users while it is empty; on
+// a claimed shop this REJECTS for a stranger, which is itself the answer — see the catch in the
+// gate. A live subscription would be wrong here: we want a single decisive look, not a listener
+// that re-fires and re-attempts the claim.
+export const readUsersOnce = () => get(ref(db, USERS_PATH)).then((snap) => snap.val());
 
 // Live online/offline signal from the RTDB client. cb(true|false).
 export function subscribeConnection(cb) {
