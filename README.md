@@ -204,6 +204,7 @@ tested data (no clock, no randomness).
 | [`appointments.js`](src/lib/appointments.js) | the overlap check, grid layout, booking validation | ✅ |
 | [`loyalty.js`](src/lib/loyalty.js) | points maths, tiers, prepaid packages | ✅ |
 | [`reminders.js`](src/lib/reminders.js) | the reminder queue, WhatsApp deep links, RFM segments | ✅ |
+| [`commissions.js`](src/lib/commissions.js) | payouts, per-stylist performance, peak hours, no-show rates | ✅ |
 | [`stats.js`](src/lib/stats.js) | revenue/profit series, heatmaps, break-even, salon analytics | ✅ |
 | [`parse.js`](src/lib/parse.js) | tolerant import parser (txt/csv/tsv/xls/xlsx/pdf/json) | ✅ |
 | [`backup.js`](src/lib/backup.js) | JSON/XLSX backup & restore | ✅ |
@@ -240,6 +241,28 @@ Two knowing simplifications, both in [`loyalty.js`](src/lib/loyalty.js):
   the pre-redemption total — otherwise points would earn points.
 - A package covers **one session per bill line**. Adding a second of the same service to one
   bill bumps the quantity at the package's zero price rather than drawing a second session.
+
+### Commissions: what the salon pays its people
+
+A quiet bug here becomes a wage dispute, so two rules are fixed in
+[`commissions.js`](src/lib/commissions.js):
+
+- **Commission is read off the bill, never recomputed from today's rates.** Every service line
+  snapshots its `commissionPct` at the moment of sale. Raise the colour rate in August and
+  July's payout does not silently reprice — a report that changes when you re-open it is a
+  report nobody can trust.
+- **A discount is the salon's decision, not the stylist's.** Commission is computed on the line
+  amount, *before* any whole-bill discount or points redemption. Netting the discount off their
+  commission would quietly make every discount come half out of the stylist's pocket.
+
+Two consequences worth knowing: a **package redemption bills at ₹0 and so earns ₹0** here (that
+session's commission was earned when the package was sold), and the **peak-hour heatmap is built
+from appointments, not bills** — a bill is stamped when the customer *pays*, which is when they
+leave, not when they were in the chair.
+
+The no-show rate's denominator is appointments that **resolved** (completed + no-show).
+Cancellations are excluded: a customer who rings ahead is being considerate, and counting that
+against the stylist would be perverse.
 
 ### Reminders: how the salon contacts people
 

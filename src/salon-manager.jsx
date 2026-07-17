@@ -47,12 +47,17 @@ import {
   pointsBalance, pointsLedger, rollingSpend, tierFor, nextTierGap, reconcileLoyalty,
   blankPackage, validatePackage, makePackage, activePackages,
   sellPackage, redeemablePackages, packageCovering, daysBetweenISO, reconcilePackages,
+  shiftMonths,
 } from "./lib/loyalty.js";
 import {
   KIND_LABELS, KIND_ICONS, SEGMENTS, SEGMENT_COLORS, SEGMENT_HINTS,
   buildQueue, reminderKey, wasSentRecently, fillTemplate, templateVars, waLink,
   segmentAll,
 } from "./lib/reminders.js";
+import {
+  allPayouts, revenuePerStaff, servicesPerDay,
+  peakHours, noShowRates, monthRange,
+} from "./lib/commissions.js";
 import { uploadBillProof, deleteBillProof, PROOF_ACCEPT, MAX_PROOF_BYTES } from "./lib/bills.js";
 // NOTE: src/lib/dailyBills.js (and its test suite) is carried over intact from the grocery core,
 // but Salon Manager does not ship the Daily-Need Bills section — a salon's consumable purchases
@@ -63,7 +68,7 @@ import {
   salesHeatmap, topItems as topItemsBy, paymentBreakdown, udhariOutstandingSeries,
   inventoryValue, inventoryByCategory, deadStock, breakEvenSeries, breakEvenEstimate,
   expenseTotal, expenseByMonth, expenseBreakdown,
-  DOW, DOW_ORDER, hourLabel,
+  DOW, DOW_ORDER, hourLabel, dayLabel,
 } from "./lib/stats.js";
 // Auto-generated from git history at build time — see scripts/vite-changelog-plugin.js.
 // Shape: { repoUrl, entries: [[date, summary, shortSha], ...] } (newest first).
@@ -1194,7 +1199,7 @@ function StoreManager({ user, role, onLogout }) {
     reminders: () => guard("reminders.use", <Reminders customers={customers} setCustomers={setCustomers} sales={sales} services={services} customerPackages={customerPackages} messageTemplates={messageTemplates} setMessageTemplates={setMessageTemplates} store={store} notify={notify} log={addLog} />),
     services: () => guard("services.manage", <Services services={services} setServices={setServices} notify={notify} log={addLog} />),
     packages: () => guard("packages.manage", <Packages packages={packages} setPackages={setPackages} customerPackages={customerPackages} setCustomerPackages={setCustomerPackages} services={services} customers={customers} setCustomers={setCustomers} setSales={setSales} notify={notify} log={addLog} />),
-    staff: () => guard("staff.manage", <Staff staff={staff} setStaff={setStaff} notify={notify} log={addLog} />),
+    staff: () => guard("staff.manage", <Staff staff={staff} setStaff={setStaff} sales={sales} appointments={appointments} store={store} notify={notify} log={addLog} />),
     raw: () => guard("import.use", <RawData items={items} setItems={setItems} setSales={setSales} setExpenses={setExpenses} notify={notify} log={addLog} />),
     inventory: () => guard("inventory.view", <Inventory items={items} setItems={setItems} notify={notify} log={addLog} cats={cats} onAddCategory={addCategory} role={role} />),
     alerts: () => guard("alerts.view", <Alerts items={items} goInventory={() => setTab("inventory")} cats={cats} />),
@@ -7376,6 +7381,256 @@ function Services({ services, setServices, notify, log }) {
   );
 }
 
+// ---------- Staff → Commission & payouts (owner only) ----------
+// The monthly "what do I owe everyone" report. Printable, because this is what gets handed
+// over (or argued about) on payday.
+//
+// Every figure comes from the rate SNAPSHOTTED on each bill line at the time of sale, so
+// re-opening last month's report next year shows the same numbers. See commissions.js.
+function StaffPayouts({ staff, sales, store }) {
+  const [month, setMonth] = useState(todayStr().slice(0, 7));
+  const [open, setOpen] = useState(null); // staffId whose line-by-line detail is expanded
+  const { from, to } = useMemo(() => monthRange(month), [month]);
+  const payouts = useMemo(() => allPayouts(staff, sales, from, to), [staff, sales, from, to]);
+  const totals = useMemo(() => ({
+    services: payouts.reduce((a, p) => a + p.services, 0),
+    revenue: money(payouts.reduce((a, p) => a + p.revenue, 0)),
+    commission: money(payouts.reduce((a, p) => a + p.commission, 0)),
+  }), [payouts]);
+  const monthLabel = new Date(month + "-01T00:00").toLocaleDateString("en-IN", { month: "long", year: "numeric" });
+
+  const print = () => {
+    const rows = payouts.filter((p) => p.services > 0).map((p) => `
+      <tr><td>${escapeHtml(p.name)}</td><td class="n">${p.services}</td>
+      <td class="n">${INR(p.revenue)}</td><td class="n"><b>${INR(p.commission)}</b></td></tr>`).join("");
+    printHtml(`
+      <style>
+        body { font-family: system-ui, sans-serif; padding: 24px; color: #111; }
+        h1 { font-size: 19px; margin: 0; }
+        .sub { color: #555; font-size: 13px; margin: 2px 0 16px; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th, td { text-align: left; padding: 7px 6px; border-bottom: 1px solid #ddd; }
+        th { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: #666; }
+        .n { text-align: right; }
+        tfoot td { border-top: 2px solid #333; border-bottom: none; font-weight: 800; }
+        .sign { margin-top: 40px; display: flex; gap: 40px; font-size: 12px; color: #555; }
+        .sign div { flex: 1; border-top: 1px solid #999; padding-top: 5px; }
+      </style>
+      <h1>${escapeHtml(store?.name || "Salon")} — Commission payouts</h1>
+      <div class="sub">${escapeHtml(monthLabel)} · ${escapeHtml(from)} to ${escapeHtml(to)}</div>
+      <table>
+        <thead><tr><th>Staff</th><th class="n">Services</th><th class="n">Revenue</th><th class="n">Commission</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="4">No services this month.</td></tr>'}</tbody>
+        <tfoot><tr><td>Total</td><td class="n">${totals.services}</td><td class="n">${INR(totals.revenue)}</td><td class="n">${INR(totals.commission)}</td></tr></tfoot>
+      </table>
+      <div class="sign"><div>Prepared by</div><div>Received by</div></div>
+    `, `Payouts ${month}`);
+  };
+
+  return (
+    <div>
+      <section style={{ ...S.panel, marginBottom: 14 }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <label style={{ fontSize: 12.5, color: "#6B7E74" }}>
+            Month{" "}
+            <input type="month" className="input" style={{ width: "auto", marginLeft: 4 }} value={month} max={todayStr().slice(0, 7)} onChange={(e) => setMonth(e.target.value || todayStr().slice(0, 7))} />
+          </label>
+          <button className="btn" style={{ marginLeft: "auto" }} onClick={print}>🖨 Print payout sheet</button>
+        </div>
+      </section>
+
+      <div style={S.cards}>
+        <Card label="Services done" value={totals.services} sub={monthLabel} />
+        <Card label="Service revenue" value={INR(totals.revenue)} sub="what their work billed" />
+        <Card label="Commission owed" value={INR(totals.commission)} sub={totals.revenue > 0 ? `${Math.round((totals.commission / totals.revenue) * 100)}% of service revenue` : "—"} accent />
+      </div>
+
+      {payouts.length === 0 ? (
+        <Empty text="No staff yet." />
+      ) : (
+        <section style={{ ...S.panel, marginTop: 14 }}>
+          <div style={{ overflowX: "auto" }}>
+            <table className="tbl" style={{ width: "100%" }}>
+              <thead>
+                <tr><th>Staff</th><th style={{ textAlign: "right" }}>Services</th><th style={{ textAlign: "right" }}>Revenue</th><th style={{ textAlign: "right" }}>Commission</th><th /></tr>
+              </thead>
+              <tbody>
+                {payouts.map((p) => (
+                  <Fragment key={p.staffId}>
+                    <tr>
+                      <td style={{ fontWeight: 600 }}>{p.name}</td>
+                      <td style={{ textAlign: "right" }}>{p.services}</td>
+                      <td style={{ textAlign: "right" }}>{INR(p.revenue)}</td>
+                      <td style={{ textAlign: "right", fontWeight: 800, color: "#1B5E43" }}>{INR(p.commission)}</td>
+                      <td style={{ textAlign: "right" }}>
+                        {p.services > 0 && (
+                          <button className="btn ghost" style={{ fontSize: 12 }} onClick={() => setOpen(open === p.staffId ? null : p.staffId)}>
+                            {open === p.staffId ? "Hide" : "Detail"}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                    {open === p.staffId && (
+                      <tr>
+                        <td colSpan={5} style={{ background: "#F7FAF7", padding: 0 }}>
+                          {/* Line by line, because "why is my commission this number" is the
+                              question this screen exists to answer. */}
+                          <table className="tbl" style={{ width: "100%" }}>
+                            <thead><tr><th>Date</th><th>Service</th><th>Customer</th><th style={{ textAlign: "right" }}>Amount</th><th style={{ textAlign: "right" }}>Rate</th><th style={{ textAlign: "right" }}>Commission</th></tr></thead>
+                            <tbody>
+                              {p.rows.map((r, i) => (
+                                <tr key={r.billId + i}>
+                                  <td style={{ whiteSpace: "nowrap" }}>{r.date}</td>
+                                  <td>
+                                    {r.service}{r.qty > 1 ? ` ×${r.qty}` : ""}
+                                    {/* A ₹0 line looks like a mistake unless it says why. */}
+                                    {r.fromPackage && <span style={{ color: "#8A9C90", fontSize: 11 }}> · package</span>}
+                                  </td>
+                                  <td style={{ color: "#6B7E74" }}>{r.customer || "Walk-in"}</td>
+                                  <td style={{ textAlign: "right" }}>{INR(r.amount)}</td>
+                                  <td style={{ textAlign: "right", color: "#6B7E74" }}>{r.rate}%</td>
+                                  <td style={{ textAlign: "right", fontWeight: 600 }}>{INR(r.commission)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: 10, lineHeight: 1.6 }}>
+            Commission is worked out at the rate that applied <b>when each service was done</b>, so
+            re-opening an old month always shows the same figures. It's calculated on the service
+            amount before any whole-bill discount — a discount is the salon's decision, not the
+            stylist's. Package sessions bill at ₹0 here; their commission was earned when the
+            package was sold.
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
+// ---------- Staff → Performance (owner only) ----------
+function StaffPerformance({ staff, sales, appointments }) {
+  const [months, setMonths] = useState(3);
+  const to = todayStr();
+  const from = useMemo(() => shiftMonths(to, -months), [to, months]);
+
+  const perStaff = useMemo(() => revenuePerStaff(activeStaff(staff), sales, from, to), [staff, sales, from, to]);
+  const noShows = useMemo(() => noShowRates(activeStaff(staff), appointments, from, to), [staff, appointments, from, to]);
+  const heat = useMemo(() => peakHours(appointments, from, to), [appointments, from, to]);
+  const perDay = useMemo(
+    () => servicesPerDay(sales, "", from, to).map((r) => ({ ...r, label: dayLabel(r.date) })),
+    [sales, from, to]
+  );
+
+  const DOW_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  // Only render hours that actually saw work — a grid from midnight to midnight is mostly
+  // empty cells, and the point of a heatmap is to be readable at a glance.
+  const hours = useMemo(() => {
+    const used = [];
+    for (let h = 0; h < 24; h++) if (heat.grid.some((row) => row[h] > 0)) used.push(h);
+    return used.length ? used : [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
+  }, [heat]);
+
+  return (
+    <div>
+      <section style={{ ...S.panel, marginBottom: 14 }}>
+        <label style={{ fontSize: 12.5, color: "#6B7E74" }}>
+          Period{" "}
+          <select className="input" style={{ width: "auto", marginLeft: 4 }} value={months} onChange={(e) => setMonths(+e.target.value)}>
+            <option value={1}>Last month</option>
+            <option value={3}>Last 3 months</option>
+            <option value={6}>Last 6 months</option>
+            <option value={12}>Last 12 months</option>
+          </select>
+          <span style={{ marginLeft: 8, color: "#8A9C90" }}>{from} → {to}</span>
+        </label>
+      </section>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        <ChartCard title="Revenue &amp; commission per stylist" height={260}>
+          <BarChart data={perStaff} margin={{ top: 16, right: 8, left: -8, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#EEF3EE" />
+            <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#678" }} />
+            <YAxis tick={{ fontSize: 11, fill: "#678" }} tickFormatter={inrTick} width={48} />
+            <Tooltip formatter={(v) => INR(v)} />
+            <Legend wrapperStyle={{ fontSize: 12 }} />
+            <Bar dataKey="revenue" name="Revenue" fill="#1B5E43" radius={[3, 3, 0, 0]} label={barLabel} />
+            <Bar dataKey="commission" name="Commission" fill="#E8A33D" radius={[3, 3, 0, 0]} label={barLabel} />
+          </BarChart>
+        </ChartCard>
+
+        <ChartCard title="No-show rate per stylist" height={260}>
+          <BarChart data={noShows} margin={{ top: 16, right: 8, left: -8, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#EEF3EE" />
+            <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#678" }} />
+            <YAxis tick={{ fontSize: 11, fill: "#678" }} unit="%" width={40} />
+            <Tooltip formatter={(v, k, p) => [`${v}% (${p.payload.noShow} of ${p.payload.resolved})`, "No-shows"]} />
+            <Bar dataKey="rate" name="No-show %" fill="#C44536" radius={[3, 3, 0, 0]} label={{ position: "top", fontSize: 10, fill: "#667", formatter: (v) => (v ? v + "%" : "") }} />
+          </BarChart>
+        </ChartCard>
+      </div>
+
+      <div style={{ marginTop: 16 }}>
+        <ChartCard title="Services performed per day" height={220}>
+          <BarChart data={perDay} margin={{ top: 16, right: 8, left: -8, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#EEF3EE" />
+            <XAxis dataKey="label" tick={{ fontSize: 10, fill: "#678" }} interval="preserveStartEnd" minTickGap={20} />
+            <YAxis tick={{ fontSize: 11, fill: "#678" }} width={32} allowDecimals={false} />
+            <Tooltip />
+            <Bar dataKey="count" name="Services" fill="#2A6FB0" radius={[3, 3, 0, 0]} />
+          </BarChart>
+        </ChartCard>
+      </div>
+
+      <section style={{ ...S.panel, marginTop: 16 }}>
+        <div style={S.panelHead}>
+          Busiest hours
+          <span style={{ fontWeight: 400, color: "#8A9C90" }}> · from the diary, not the till — when people were in the chair</span>
+        </div>
+        {heat.max === 0 ? (
+          <Empty text="No appointments in this period yet." />
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ borderCollapse: "collapse", fontSize: 11 }}>
+              <thead>
+                <tr>
+                  <th />
+                  {hours.map((h) => <th key={h} style={{ padding: "2px 4px", color: "#8A9C90", fontWeight: 600 }}>{hourLabel(h)}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {DOW_LABELS.map((d, i) => (
+                  <tr key={d}>
+                    <td style={{ padding: "2px 6px 2px 0", color: "#5E7468", fontWeight: 700, whiteSpace: "nowrap" }}>{d}</td>
+                    {hours.map((h) => {
+                      const v = heat.grid[i][h];
+                      // Opacity by intensity: a busy cell reads as busy without needing a legend.
+                      const a = v ? 0.15 + 0.85 * (v / heat.max) : 0;
+                      return (
+                        <td key={h} title={`${d} ${hourLabel(h)} — ${v} appointment(s)`}
+                          style={{ padding: 0, width: 26, height: 22, background: v ? `rgba(27,94,67,${a})` : "#F4F7F4", border: "1px solid #fff", textAlign: "center", color: a > 0.55 ? "#fff" : "#5E7468", fontWeight: 600 }}>
+                          {v || ""}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
 // ---------- Packages (owner only) ----------
 // Prepaid work: the customer buys N sessions up front and draws them down. The money is taken
 // on day one, which is why a redemption at the till is a zero-price line.
@@ -7593,7 +7848,8 @@ function Packages({ packages, setPackages, customerPackages, setCustomerPackages
 // ---------- Staff (owner only) ----------
 // Who works here, what colour they are on the appointment grid, and what they earn by default.
 // Phase 5 builds payout reports and performance charts on top of this.
-function Staff({ staff, setStaff, notify, log }) {
+function Staff({ staff, setStaff, sales, appointments, store, notify, log }) {
+  const [tab, setTab] = useState("team"); // team | payouts | performance
   const [showInactive, setShowInactive] = useState(false);
   const [editing, setEditing] = useState(null); // staff id | "new"
   const [form, setForm] = useState(blankStaff());
@@ -7633,10 +7889,20 @@ function Staff({ staff, setStaff, notify, log }) {
 
   return (
     <div>
-      <Header title="Staff" sub={`${activeStaff(staff).length} working · colours, roles and default commission`}>
-        <button className="btn primary big" onClick={startNew}>+ Add staff</button>
+      <Header title="Staff" sub={`${activeStaff(staff).length} working`}>
+        {tab === "team" && <button className="btn primary big" onClick={startNew}>+ Add staff</button>}
       </Header>
 
+      <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+        {[["team", "Team"], ["payouts", "Commission & payouts"], ["performance", "Performance"]].map(([k, label]) => (
+          <button key={k} className={"btn" + (tab === k ? " primary" : "")} onClick={() => setTab(k)}>{label}</button>
+        ))}
+      </div>
+
+      {tab === "payouts" && <StaffPayouts staff={staff} sales={sales} store={store} />}
+      {tab === "performance" && <StaffPerformance staff={staff} sales={sales} appointments={appointments} />}
+
+      {tab === "team" && <>
       <section style={{ ...S.panel, marginBottom: 14 }}>
         <label style={{ fontSize: 12.5, color: "#6B7E74", display: "flex", alignItems: "center", gap: 6 }}>
           <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
@@ -7676,6 +7942,7 @@ function Staff({ staff, setStaff, notify, log }) {
           ))}
         </div>
       )}
+      </>}
 
       {editing && (
         <Modal title={editing === "new" ? "Add staff" : "Edit staff"} onClose={close}>
