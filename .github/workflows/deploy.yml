@@ -1,0 +1,69 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow one concurrent deployment; newer runs cancel in-progress ones.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        # Full history (not a shallow clone) so the build-time App Change Log can read every
+        # commit from `git log`; with the default depth of 1 it would only see the tip commit.
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          # Node 24 ships npm 11, which correctly skips esbuild's foreign-platform
+          # optional deps during `npm ci`. npm 10 (Node 20) errors EBADPLATFORM on them.
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      # Whichever attempt actually published wins; skipped attempts expose no output.
+      url: ${{ steps.deploy3.outputs.page_url || steps.deploy2.outputs.page_url || steps.deploy1.outputs.page_url }}
+    steps:
+      # GitHub Pages' publish API intermittently returns "Deployment failed, try again later"
+      # even when the status page shows Pages fully operational. The build is already green by
+      # here, so retry the publish up to 3× with a cooldown instead of failing the run (which
+      # previously needed a manual empty "ci: re-trigger" commit). Each attempt only runs if the
+      # previous one failed; a success short-circuits the rest.
+      - id: deploy1
+        continue-on-error: true
+        uses: actions/deploy-pages@v4
+      - if: steps.deploy1.outcome == 'failure'
+        name: Cooldown before retry 1
+        run: sleep 30
+      - id: deploy2
+        if: steps.deploy1.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/deploy-pages@v4
+      - if: steps.deploy1.outcome == 'failure' && steps.deploy2.outcome == 'failure'
+        name: Cooldown before retry 2
+        run: sleep 60
+      - id: deploy3
+        if: steps.deploy1.outcome == 'failure' && steps.deploy2.outcome == 'failure'
+        uses: actions/deploy-pages@v4

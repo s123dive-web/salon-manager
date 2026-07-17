@@ -1,0 +1,19 @@
+{
+  "rules": {
+    // ----------------------------------------------------------------------
+    // Realtime Database access is locked to the single shop-owner account.
+    // This is the ONLY thing protecting the data: the Firebase config in
+    // src/lib/firebase.js is public by design, so these rules are the gate.
+    //
+    // SETUP (do this once, before relying on the app):
+    //   1. Replace OWNER_EMAIL below with the owner's sign-in email.
+    //   2. Deploy:  firebase deploy --only database
+    //   (Firebase RTDB rules allow these // comments; they're stripped on deploy.)
+    //
+    // Optional hardening: append  && auth.token.email_verified == true  to both
+    // lines once the owner's email is verified, to reject unverified sign-ins.
+    // ----------------------------------------------------------------------
+    ".read": "auth != null && auth.token.email == 'OWNER_EMAIL'",
+    ".write": "auth != null && auth.token.email == 'OWNER_EMAIL'"
+  }
+}
