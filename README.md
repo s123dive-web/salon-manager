@@ -353,3 +353,15 @@ Pushing to `main` builds and publishes to **GitHub Pages** via
 and `npm test` before publishing, and retries the Pages publish up to 3× to ride out transient
 API failures). The Pages base path is set in [`vite.config.js`](vite.config.js) and must match
 the repository name.
+
+### ⚠ One-time: turn Pages on
+
+**Repo → Settings → Pages → Build and deployment → Source: _GitHub Actions_.**
+
+Until that's set, every run fails at the `configure-pages` step with a **403**, *after* `npm ci`,
+the build and the tests have all passed — the workflow is fine, the repository just has nowhere
+to publish to. Re-run the latest workflow (or push any commit) once it's enabled.
+
+The site then lands at `https://<user>.github.io/salon-manager/`. It will show the
+"not connected yet" sign-in screen until [`src/lib/firebase.js`](src/lib/firebase.js) has a real
+project in it.
