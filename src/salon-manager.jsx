@@ -69,6 +69,9 @@ import {
   inventoryValue, inventoryByCategory, deadStock, breakEvenSeries, breakEvenEstimate,
   expenseTotal, expenseByMonth, expenseBreakdown,
   DOW, DOW_ORDER, hourLabel, dayLabel,
+  // Salon analytics (Phase 6) — appended to stats.js below the ported grocery core.
+  serviceVsProductRevenue, topServices, repeatRatio, avgBillTrend, ltvDistribution,
+  newVsReturning, noShowPct, dormantTrend, rebookConversion,
 } from "./lib/stats.js";
 // Auto-generated from git history at build time — see scripts/vite-changelog-plugin.js.
 // Shape: { repoUrl, entries: [[date, summary, shortSha], ...] } (newest first).
@@ -137,7 +140,7 @@ function qrDataUrl(text, cellSize = 6, margin = 2) {
   return qr.createDataURL(cellSize, margin);
 }
 
-// A blank string, or a UPI VPA like prakashmart@okhdfcbank / 9876543210@ybl: a permissive handle
+// A blank string, or a UPI VPA like mysalon@okhdfcbank / 9876543210@ybl: a permissive handle
 // (letters, digits, dot, hyphen, underscore) before an alphanumeric bank/PSP suffix that starts
 // with a letter. Used to sanity-check the field before saving; blank is allowed (feature is off).
 const isValidUpiId = (s) => {
@@ -185,7 +188,12 @@ function printHtml(html, title) {
 // l.price, l.amount, sale.total, discount, payment …) is read straight off the sale and merely
 // laid out for a 72mm (80mm paper) ESC/POS thermal printer. See printHtml() for the print
 // mechanism (isolated iframe document → no app-UI leakage).
-function printReceipt(sale, store = STORE, staff = []) {
+// `extras` carries the salon bits a receipt needs but a bill doesn't store: the customer's
+// points balance AFTER this bill, and when they're next due. Both are derived at print time
+// from live data (the ledger is the bills), so a reprint months later shows today's truth —
+// which is the right answer for a balance and a suggestion, and would be the wrong answer for
+// money. The money on this receipt all comes off the sale record itself.
+function printReceipt(sale, store = STORE, staff = [], extras = {}) {
   // Custom logo/QR are stored as data URLs (already absolute); the bundled fallbacks are
   // relative /public assets that must be made absolute for the print iframe (about:blank).
   const logoUrl = store.logo ? store.logo : assetUrl(LOGO_SRC);
@@ -265,12 +273,17 @@ function printReceipt(sale, store = STORE, staff = []) {
     <table class="items">${rows}
     ${sale.discount > 0 ? `<tr><td class="col-name">Subtotal</td><td class="col-qty"></td><td class="col-amt">${INR(sale.subtotal != null ? sale.subtotal : money((sale.total || 0) + sale.discount))}</td></tr>
     <tr><td class="col-name">Discount${sale.discountPct ? " (" + sale.discountPct + "%)" : ""}</td><td class="col-qty"></td><td class="col-amt">−${INR(sale.discount)}</td></tr>` : ""}
+    ${sale.pointsRedeemed > 0 ? `<tr><td class="col-name">Points used (${escapeHtml(String(sale.pointsRedeemed))})</td><td class="col-qty"></td><td class="col-amt">−${INR(sale.pointsValue || 0)}</td></tr>` : ""}
     <tr class="tot"><td class="col-name">TOTAL</td><td class="col-qty"></td><td class="col-amt">${INR(sale.total)}</td></tr>
     </table>
     ${sale.payment ? `<div class="meta">Paid via ${escapeHtml(sale.payment)}${sale.customer ? " — " + escapeHtml(sale.customer) : ""}</div>` : ""}
     ${sale.customer || sale.mobile ? `<div class="meta">Customer: ${escapeHtml(sale.customer || "—")}${sale.mobile ? " · " + escapeHtml(sale.mobile) : ""}</div>` : ""}
     ${sale.payment === "Udhari" ? `<div class="meta">Paid now: ${INR(sale.paid || 0)}${sale.paidMode ? " (" + escapeHtml(sale.paidMode) + ")" : ""} &nbsp; Balance due: ${INR(Math.max(0, (sale.total || 0) - (sale.paid || 0)))}</div>` : ""}
+    ${sale.pointsEarned > 0 || extras.pointsBalance > 0 ? `<div class="rule"></div>
+    <div class="meta">${sale.pointsEarned > 0 ? "Points earned: " + escapeHtml(String(sale.pointsEarned)) : ""}${sale.pointsEarned > 0 && extras.pointsBalance != null ? " &nbsp;·&nbsp; " : ""}${extras.pointsBalance != null ? "Balance: " + escapeHtml(String(extras.pointsBalance)) + " pts" : ""}</div>` : ""}
+    ${extras.packageNote ? `<div class="meta">${escapeHtml(extras.packageNote)}</div>` : ""}
     <div class="rule"></div>
+    ${extras.nextVisit ? `<div class="ft">${escapeHtml(extras.nextVisit)}</div>` : ""}
     <div class="ft">Thank you! Please visit again.</div>
     <div class="qr">
       <img class="${dynQr ? "gen" : ""}" src="${qrUrl}" alt="Scan to pay" onerror="this.style.display='none'" />
@@ -278,6 +291,41 @@ function printReceipt(sale, store = STORE, staff = []) {
     </div>`,
     "Receipt"
   );
+}
+
+/**
+ * The salon extras a receipt shows but a bill doesn't store: the points balance after this
+ * bill, a note about any package used, and a next-visit suggestion.
+ *
+ * The suggestion is the SOONEST rebooking cycle among the services on this bill — a customer
+ * who had a cut (45d) and a colour (60d) is due back in 45 days, not 60. Suggesting the later
+ * date would quietly cost the salon a visit.
+ *
+ * Returns {} for a walk-in: there is nobody to hold a balance or be due back.
+ */
+function receiptExtras(sale, { customerPackages = [], services = [], sales = [] } = {}) {
+  if (!sale?.customerPhone) return {};
+  const extras = { pointsBalance: pointsBalance(sale.customerPhone, sales) };
+
+  if (sale.packageRedemptions?.length) {
+    const id = sale.packageRedemptions[0].customerPackageId;
+    const cp = customerPackages.find((x) => x.id === id);
+    if (cp) extras.packageNote = `${cp.name}: ${cp.usesLeft} session(s) left · valid to ${cp.expiresAt}`;
+  }
+
+  let soonest = 0;
+  for (const l of sale.lines || []) {
+    if (!isServiceLine(l) || !l.serviceId) continue;
+    const svc = serviceById(services, l.serviceId);
+    const cycle = Number(svc?.rebookCycleDays) || 0;
+    if (cycle > 0 && (soonest === 0 || cycle < soonest)) soonest = cycle;
+  }
+  if (soonest > 0) {
+    const due = addDays(sale.date, soonest);
+    const nice = new Date(due + "T00:00").toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+    extras.nextVisit = `See you around ${nice} — book ahead to keep your slot.`;
+  }
+  return extras;
 }
 
 // The Scan-to-Pay QR shown live in the billing panel while payment = UPI. When a UPI ID is set it
@@ -1204,16 +1252,16 @@ function StoreManager({ user, role, onLogout }) {
     inventory: () => guard("inventory.view", <Inventory items={items} setItems={setItems} notify={notify} log={addLog} cats={cats} onAddCategory={addCategory} role={role} />),
     alerts: () => guard("alerts.view", <Alerts items={items} goInventory={() => setTab("inventory")} cats={cats} />),
     barcode: () => guard("barcode.use", <BarcodeCreator items={items} setItems={setItems} store={store} notify={notify} log={addLog} />),
-    sales: () => guard("sales.view", <SalesHistory sales={sales} items={items} staff={staff} setSales={setSales} setItems={setItems} store={store} notify={notify} log={addLog} role={role} />),
+    sales: () => guard("sales.view", <SalesHistory sales={sales} items={items} staff={staff} services={services} customerPackages={customerPackages} setSales={setSales} setItems={setItems} store={store} notify={notify} log={addLog} role={role} />),
     finance: () => (tabEnabled("finance") ? guard("finance.view", <Finance sales={sales} expenses={expenses} />) : dashboard),
-    stats: () => guard("stats.view", <Stats sales={sales} expenses={expenses} items={items} />),
+    stats: () => guard("stats.view", <Stats sales={sales} expenses={expenses} items={items} customers={customers} appointments={appointments} />),
     udhari: () => guard("udhari.manage", <Udhari sales={sales} setSales={setSales} notify={notify} log={addLog} />),
     expense: () => guard("expenses.manage", <Expenses expenses={expenses} setExpenses={setExpenses} notify={notify} log={addLog} />),
     vendorbills: () => guard("vendorBills.manage", <VendorBills bills={bills} setBills={setBills} setDailyBills={setDailyBills} online={online} notify={notify} log={addLog} />),
     logs: () => guard("logs.view", <Logs logs={logs} setLogs={setLogs} notify={notify} />),
     changelog: () => <Changelog />,
     settings: () => guard("settings.manage", <StoreConfig config={config} setConfig={setConfig} notify={notify} log={addLog} user={user} role={role} />),
-    admin: () => guard("settings.manage", <Admin items={items} setItems={setItems} setSales={setSales} setExpenses={setExpenses} setLogs={setLogs} user={user} notify={notify} log={addLog} />),
+    admin: () => guard("settings.manage", <Admin items={items} setItems={setItems} setSales={setSales} setExpenses={setExpenses} setLogs={setLogs} sales={sales} customers={customers} setCustomers={setCustomers} customerPackages={customerPackages} setCustomerPackages={setCustomerPackages} config={config} user={user} notify={notify} log={addLog} />),
   };
   const view = (VIEWS[tab] || VIEWS.dashboard)();
 
@@ -2391,7 +2439,7 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
           {cart.length === 0 ? (
             <Empty text="Bill is empty. Tap services or products on the left to add.">
               {lastSale && (
-                <button className="btn" onClick={() => printReceipt(lastSale, store, staff)}>🖨 Print last bill · {INR(lastSale.total)}</button>
+                <button className="btn" onClick={() => printReceipt(lastSale, store, staff, receiptExtras(lastSale, { customerPackages, services, sales }))}>🖨 Print last bill · {INR(lastSale.total)}</button>
               )}
             </Empty>
           ) : (
@@ -3703,7 +3751,7 @@ function RawData({ items, setItems, setSales, setExpenses, notify, log }) {
 // ---------- Sales history ----------
 const PAY_COLORS = { UPI: "#2A6FB0", Cash: "#1B5E43", Udhari: "#C44536" };
 
-function SalesHistory({ sales, items, staff, setSales, setItems, store = STORE, notify, log, role }) {
+function SalesHistory({ sales, items, staff, services = [], customerPackages = [], setSales, setItems, store = STORE, notify, log, role }) {
   const [open, setOpen] = useState(null);
   const [openDates, setOpenDates] = useState(() => new Set()); // expanded past dates (today is always open)
   const [from, setFrom] = useState("");
@@ -4100,7 +4148,7 @@ function SalesHistory({ sales, items, staff, setSales, setItems, store = STORE, 
                       theirs. Changing or erasing a bill that's already been rung up is an owner
                       decision, and the database rules enforce the delete half of that too. */}
                   <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-                    <button className="btn small" onClick={() => printReceipt(s, store, staff)}>🖨 Print</button>
+                    <button className="btn small" onClick={() => printReceipt(s, store, staff, receiptExtras(s, { customerPackages, services, sales }))}>🖨 Print</button>
                     {can(role, "sales.edit") && <button className="btn small ghost" onClick={() => openEdit(s)}>✎ Edit bill</button>}
                     {can(role, "sales.edit") && <button className="btn small ghost" onClick={() => openSplit(s)}>✂ Split</button>}
                     {can(role, "sales.delete") && <button className="btn small danger" onClick={() => deleteSale(s)}>🗑 Delete</button>}
@@ -4404,7 +4452,7 @@ function Logs({ logs, setLogs, notify }) {
 // Data comes from git history at build time (scripts/vite-changelog-plugin.js) — CI/deploy noise is
 // filtered out there, so nothing here is hand-maintained. The fallback URL only matters if the build
 // had no git remote; entries are simply empty in that case and the section shows an empty state.
-const REPO_URL = CHANGELOG_DATA.repoUrl || "https://github.com/s123dive-web/grocery-store-manager";
+const REPO_URL = CHANGELOG_DATA.repoUrl || "https://github.com/s123dive-web/salon-manager";
 const CHANGELOG = CHANGELOG_DATA.entries || [];
 
 function Changelog() {
@@ -4849,7 +4897,7 @@ function breakEvenCard(be, est) {
   }
 }
 
-function Stats({ sales, expenses, items }) {
+function Stats({ sales, expenses, items, customers = [], appointments = [] }) {
   const [preset, setPreset] = useState("allTime"); // default to the full history
   const [cfrom, setCfrom] = useState("");
   const [cto, setCto] = useState("");
@@ -4870,6 +4918,23 @@ function Stats({ sales, expenses, items }) {
   const expMonthly = useMemo(() => expenseByMonth(pExp, expFrom, to), [pExp, expFrom, to]);
   const expBreak = useMemo(() => expenseBreakdown(pExp, { limit: 10 }), [pExp]);
   const expSum = useMemo(() => expenseTotal(pExp), [pExp]);
+
+  // ---- salon analytics ----
+  const svcSplit = useMemo(() => serviceVsProductRevenue(pSales, from, to), [pSales, from, to]);
+  const topSvc = useMemo(() => topServices(pSales, { metric: metric === "qty" ? "count" : "revenue", limit: 12, from, to }), [pSales, from, to, metric]);
+  const repeat = useMemo(() => repeatRatio(pSales, from, to), [pSales, from, to]);
+  const avgBills = useMemo(() => avgBillTrend(pSales, from, to), [pSales, from, to]);
+  // LTV is a lifetime measure by definition — it reads the FULL history regardless of the
+  // period picker, like the inventory and break-even cards above.
+  const ltv = useMemo(() => ltvDistribution(sales), [sales]);
+  const newRet = useMemo(() => newVsReturning(sales, from, to), [sales, from, to]);
+  const noShow = useMemo(() => noShowPct(appointments, from, to), [appointments, from, to]);
+  const dormant = useMemo(() => dormantTrend(sales, from.slice(0, 7), to.slice(0, 7)), [sales, from, to]);
+  const rebook = useMemo(() => rebookConversion(customers, sales, todayStr()), [customers, sales]);
+  const svcMix = useMemo(
+    () => [{ name: "Services", value: svcSplit.service }, { name: "Products", value: svcSplit.product }].filter((x) => x.value > 0),
+    [svcSplit]
+  );
 
   const daily = useMemo(() => dailyRevenueSeries(pSales, from, to), [pSales, from, to]);
   const monthly = useMemo(() => monthlyRevenueProfit(pSales, from, to), [pSales, from, to]);
@@ -4943,6 +5008,103 @@ function Stats({ sales, expenses, items }) {
                 <Bar dataKey="revenue" name="Revenue" fill="#1B5E43" radius={[3, 3, 0, 0]} maxBarSize={54} label={exactLabel} />
                 <Line type="monotone" dataKey="profit" name="Profit" stroke="#E8A33D" strokeWidth={2.5} dot={{ r: 2.5, fill: "#E8A33D" }} label={exactLabelGold} />
               </ComposedChart>
+            </ChartCard>
+          </div>
+
+          {/* ---- Salon analytics ----
+              Placed above the generic product charts because for a salon these ARE the
+              business: the labour/retail split, whether customers come back, and whether the
+              reminders are earning their keep. */}
+          <div style={sectionHead}>The salon</div>
+          <div style={S.cards}>
+            <Card label="Service revenue" value={INR(svcSplit.service)} sub={`${svcSplit.servicePct}% of takings`} accent />
+            <Card label="Retail revenue" value={INR(svcSplit.product)} sub={`${money(100 - svcSplit.servicePct)}% of takings`} />
+            <Card label="Customers who came back" value={`${repeat.pct}%`} sub={`${repeat.repeat} of ${repeat.identified} identified · walk-ins excluded`} />
+            <Card label="No-shows" value={`${noShow.pct}%`} sub={noShow.resolved ? `${noShow.noShow} of ${noShow.resolved} resolved appointments` : "no appointments yet"} />
+            <Card
+              label="Reminders → visits"
+              value={rebook.sent ? `${rebook.pct}%` : "—"}
+              sub={rebook.sent ? `${rebook.converted} of ${rebook.sent} came back within 14 days` : "none sent long enough ago to judge"}
+            />
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 16 }}>
+            <ChartCard title="Where the money comes from" height={240}>
+              {svcMix.length === 0 ? <Empty text="No sales in this period." /> : (
+                <PieChart>
+                  <Pie data={svcMix} dataKey="value" nameKey="name" innerRadius={52} outerRadius={84} paddingAngle={2}>
+                    {svcMix.map((s) => <Cell key={s.name} fill={s.name === "Services" ? "#1B5E43" : "#E8A33D"} />)}
+                  </Pie>
+                  <Tooltip formatter={(v) => formatINR(v)} />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                </PieChart>
+              )}
+            </ChartCard>
+
+            <ChartCard title={`Top services by ${metric === "qty" ? "how often" : "revenue"}`} height={240}>
+              {topSvc.length === 0 ? <Empty text="No services billed in this period." /> : (
+                <BarChart data={topSvc} layout="vertical" margin={{ top: 4, right: 40, left: 4, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#EEF3EE" horizontal={false} />
+                  <XAxis type="number" tick={{ fontSize: 11, fill: "#678" }} tickFormatter={metric === "qty" ? undefined : inrCompact} />
+                  <YAxis type="category" dataKey="name" tick={{ fontSize: 10.5, fill: "#465" }} width={110} />
+                  <Tooltip formatter={(v, n, p) => (metric === "qty" ? [`${v} done`, p.payload.name] : [formatINR(v), p.payload.name])} />
+                  <Bar dataKey={metric === "qty" ? "count" : "revenue"} fill="#2A6FB0" radius={[0, 3, 3, 0]}
+                    label={{ position: "right", fontSize: 10, fill: "#465", formatter: (v) => (metric === "qty" ? v : inrCompact(v)) }} />
+                </BarChart>
+              )}
+            </ChartCard>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 16 }}>
+            <ChartCard title="New vs returning customers" height={240}>
+              {newRet.length === 0 ? <Empty text="No identified customers yet." /> : (
+                <BarChart data={newRet} margin={{ top: 16, right: 8, left: -8, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#EEF3EE" />
+                  <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#678" }} />
+                  <YAxis tick={{ fontSize: 11, fill: "#678" }} width={32} allowDecimals={false} />
+                  <Tooltip />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  <Bar dataKey="new" name="New" stackId="c" fill="#7C3AED" radius={[0, 0, 0, 0]} />
+                  <Bar dataKey="returning" name="Returning" stackId="c" fill="#1B5E43" radius={[3, 3, 0, 0]} />
+                </BarChart>
+              )}
+            </ChartCard>
+
+            <ChartCard title="Average bill value" height={240}>
+              {avgBills.length === 0 ? <Empty text="No bills in this period." /> : (
+                <LineChart data={avgBills} margin={{ top: 16, right: 10, left: -6, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#EEF3EE" />
+                  <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#678" }} />
+                  <YAxis tick={{ fontSize: 11, fill: "#678" }} tickFormatter={inrCompact} width={48} />
+                  <Tooltip formatter={(v, n, p) => [`${formatINR(v)} across ${p.payload.bills} bill(s)`, "Average bill"]} />
+                  <Line type="monotone" dataKey="avg" name="Average bill" stroke="#1B5E43" strokeWidth={2.5} dot={{ r: 2.5 }} label={exactLabel} />
+                </LineChart>
+              )}
+            </ChartCard>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 16 }}>
+            <ChartCard title="Customer lifetime value (all time)" height={240}>
+              <BarChart data={ltv} margin={{ top: 16, right: 8, left: -8, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#EEF3EE" />
+                <XAxis dataKey="label" tick={{ fontSize: 10.5, fill: "#678" }} />
+                <YAxis tick={{ fontSize: 11, fill: "#678" }} width={32} allowDecimals={false} />
+                <Tooltip formatter={(v) => [`${v} customer(s)`, "Count"]} />
+                <Bar dataKey="count" name="Customers" fill="#7C3AED" radius={[3, 3, 0, 0]}
+                  label={{ position: "top", fontSize: 10, fill: "#667", formatter: (v) => v || "" }} />
+              </BarChart>
+            </ChartCard>
+
+            <ChartCard title="Customers gone quiet (60+ days)" height={240}>
+              {dormant.length === 0 ? <Empty text="Not enough history yet." /> : (
+                <LineChart data={dormant} margin={{ top: 16, right: 10, left: -6, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#EEF3EE" />
+                  <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#678" }} />
+                  <YAxis tick={{ fontSize: 11, fill: "#678" }} width={32} allowDecimals={false} />
+                  <Tooltip formatter={(v, n, p) => [`${v} of ${p.payload.known} known customers`, "Dormant"]} />
+                  <Line type="monotone" dataKey="dormant" name="Dormant" stroke="#C44536" strokeWidth={2.5} dot={{ r: 2.5 }} />
+                </LineChart>
+              )}
             </ChartCard>
           </div>
 
@@ -5999,7 +6161,7 @@ function StoreConfig({ config, setConfig, notify, log, user, role }) {
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <Field label="UPI ID (amount QR)">
-              <input className="input" value={draft.upiId} placeholder="e.g. prakashmart@okhdfcbank" onChange={(e) => set("upiId", e.target.value)} />
+              <input className="input" value={draft.upiId} placeholder="e.g. mysalon@okhdfcbank" onChange={(e) => set("upiId", e.target.value)} />
             </Field>
             <Field label="Payee name (UPI)">
               <input className="input" value={draft.upiName} placeholder={draft.name.trim() || STORE.name} onChange={(e) => set("upiName", e.target.value)} />
@@ -8182,7 +8344,7 @@ function Users({ user, notify, log }) {
 // ---------- Admin (password-gated bulk / destructive operations) ----------
 // Every action requires: confirm → confirm again → re-enter the account password
 // (verified against Firebase Auth). Only on a successful re-auth does the action run.
-function Admin({ items, setItems, setSales, setExpenses, setLogs, user, notify, log }) {
+function Admin({ items, setItems, setSales, setExpenses, setLogs, sales, customers, setCustomers, customerPackages, setCustomerPackages, config, user, notify, log }) {
   const [pending, setPending] = useState(null); // the chosen operation
   const [step, setStep] = useState(1); // 1 = first confirm, 2 = password
   const [pwd, setPwd] = useState("");
@@ -8207,7 +8369,36 @@ function Admin({ items, setItems, setSales, setExpenses, setLogs, user, notify, 
   const guessForOther = (i) => { const g = guessCategory(i.name); return g && g !== "Other" ? g : null; };
   const otherFixable = useMemo(() => items.filter((i) => isOtherCat(i) && guessForOther(i)).length, [items]);
 
+  // How far the denormalized fields have drifted from the bills. Normally 0: the shell
+  // reconciles them on every change. A non-zero count means data arrived from outside the app
+  // (a restore, a hand-edit in the Firebase console), which is exactly when the repair tool
+  // below earns its keep.
+  const drift = useMemo(() => {
+    const fixedStats = reconcileCustomers(customers, sales);
+    const fixedLoyalty = reconcileLoyalty(fixedStats, sales, config, todayStr());
+    const fixedPkgs = reconcilePackages(customerPackages, sales);
+    const changedCustomers = fixedLoyalty === customers ? 0 : fixedLoyalty.filter((c, i) => c !== customers[i]).length;
+    const changedPkgs = fixedPkgs === customerPackages ? 0 : fixedPkgs.filter((p, i) => p !== customerPackages[i]).length;
+    return { customers: changedCustomers, packages: changedPkgs, total: changedCustomers + changedPkgs };
+  }, [customers, sales, config, customerPackages]);
+
   const ops = [
+    // The escape hatch for the derived-not-stored design. Everything it recomputes is already
+    // recomputed automatically as bills change; this exists for data that arrived from outside
+    // the app, where "automatically" never ran.
+    { key: "recompute", label: "Recompute customer stats, points & packages", group: "Salon",
+      desc:
+        "Rebuild every customer's visit count, total spend, loyalty points and tier — and every " +
+        "package's remaining sessions — from the bills. The bills are the source of truth, so this " +
+        "can only ever correct these figures, never lose anything. Safe to run any time; worth " +
+        "running after restoring a backup." +
+        (drift.total ? ` Right now ${drift.total} record(s) look out of step.` : " Everything currently matches."),
+      apply: () => {
+        setCustomers((cs) => reconcileLoyalty(reconcileCustomers(cs, sales), sales, config, todayStr()));
+        setCustomerPackages((cps) => reconcilePackages(cps, sales));
+      },
+      logMsg: "Recomputed customer stats, loyalty points and package balances from bills",
+      toast: drift.total ? `Corrected ${drift.total} record(s)` : "Everything already matched" },
     { key: "zeroStock", label: "Zero all stock", group: "Inventory",
       desc: "Set stock to 0 and clear every batch for all items. Names and prices are kept.",
       apply: () => setItems((l) => l.map((i) => ({ ...i, stock: 0, batches: [], updatedAt: todayStr() }))),

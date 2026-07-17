@@ -14,6 +14,42 @@ are **ported, not rewritten** — they arrive with their test suites intact. The
 Nothing here is branded to a particular salon: the name, address, phone, logo and payment QR
 are all **editable in Settings**, so the app is reusable by any salon.
 
+## What it does
+
+**Front desk** — a day-view appointment diary with a column per stylist; 15-minute slots,
+multi-service bookings, blocked-out time, overlap prevention, and **Complete → Bill**, which
+hands the POS the customer, services and stylist pre-filled.
+
+**Billing** — services and retail on one bill, per-line stylist attribution, barcode scanning,
+UPI / Cash / Udhari (credit), amount-encoded UPI QR, back-dating, and a 3-inch thermal receipt
+that names the stylist, the points earned and when the customer is next due.
+
+**Customers** — keyed by phone, created in one tap from the till. Visit history, spend, notes,
+birthdays and anniversaries, loyalty points, tiers, packages, and RFM segments (TOP / Regular /
+At-risk / Dormant / New).
+
+**Loyalty & memberships** — configurable points (earn rate, redemption value, caps), rolling
+12-month tiers, and prepaid packages that redeem at the till as ₹0 lines.
+
+**Reminders** — a daily queue built from rebooking cycles, birthdays, anniversaries, expiring
+packages and dormant customers, sent as WhatsApp deep links with editable Hindi/English
+templates.
+
+**Staff** — roster, colours, commission rates, a printable monthly payout report with
+line-by-line detail, and performance charts (revenue per stylist, services per day, a
+peak-hour heatmap, no-show rates).
+
+**Stock** — retail *and* backbar, with batches, expiry, FIFO depletion, low-stock and expiry
+alerts, a barcode label creator, and tolerant import (txt/csv/tsv/xls/xlsx/pdf/json).
+
+**Money** — sales history (edit, split across dates, delete), the Udhari credit ledger, vendor
+bills with proof uploads, expenses, salon analytics (service vs retail split, top services,
+repeat ratio, average bill trend, LTV distribution, new vs returning, no-show %, dormant trend,
+reminder→visit conversion), and JSON/XLSX backup & restore.
+
+Throughout: multi-user roles, live sync across devices, offline reads, an activity log, and a
+layout that works on the phone at the counter.
+
 ## ⚠ Before it will run: connect a Firebase project
 
 This repository ships with a **placeholder Firebase config**. Sign-in and sync are inactive
@@ -233,7 +269,13 @@ delete-reversal is automatic — there is no reversal code to forget.**
 
 The cost is one pass over an in-memory array; the reconcilers return the *same array reference*
 when nothing changed, so they settle in one pass rather than writing to the cloud on every
-render. `Admin → recompute` re-runs them all if data is ever imported from outside the app.
+render.
+
+**`Admin → Recompute customer stats, points & packages`** is the escape hatch. It rebuilds all
+of it from the bills, and it tells you up front how many records currently look out of step —
+normally zero, because the app reconciles as it goes. It matters after a **restore**, or after
+data has been touched outside the app, where "as it goes" never ran. Since the bills are the
+source of truth, it can only ever correct these figures — it cannot lose anything.
 
 Two knowing simplifications, both in [`loyalty.js`](src/lib/loyalty.js):
 

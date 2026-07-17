@@ -4,16 +4,22 @@
 // Everything here is side-effect-free and free of `Date.now()` / `new Date()`
 // (except when derived from an explicit YYYY-MM-DD string), so each function is
 // deterministic and easy to unit-test in isolation (see stats.test.js). The
-// React layer (grocery-store-manager.jsx) imports these and only worries about
-// rendering.
+// React layer (salon-manager.jsx) imports these and only worries about rendering.
 //
 // Shapes it consumes (see the schema notes in the app):
 //   sale    = { date:"YYYY-MM-DD", time:"11:27 pm", payment:"UPI|Cash|Udhari",
 //               total, profit, paid?, payments?[{amount,date}],
-//               lines:[{name, qty, amount, price, buyPrice, unit, misc?}] }
+//               customerPhone?, lines:[{name, qty, amount, price, buyPrice,
+//               unit, misc?, lineType?:"service"|"product", staffId?}] }
 //   expense = { date, desc, amount }   // one-time setup capex, NOT operating cost
 //   item    = { name, category, buyPrice, sellPrice, stock, ... }
+//
+// Everything above the "Salon analytics" banner near the bottom is the grocery
+// core's validated analytics, ported unchanged. The salon metrics are appended
+// there rather than woven in, so those functions and their tests stay untouched.
 // ---------------------------------------------------------------------------
+
+import { isServiceLine } from "./salon.js";
 
 const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 export const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -418,4 +424,260 @@ export const breakEvenEstimate = (be) => {
   const perDay = cumulativeProfit / spanDays;
   if (perDay <= 0) return { status: "stalled" };
   return { status: "projected", daysLeft: Math.ceil((capex - cumulativeProfit) / perDay), perDay: round2(perDay) };
+};
+
+// ============================================================================
+// Salon analytics (Phase 6).
+//
+// Appended, not woven in: everything above is the grocery core's validated
+// analytics and its tests must keep passing untouched. These read the salon
+// fields on a bill (lineType, customerPhone) and treat their absence as
+// "grocery-era bill" rather than as an error.
+//
+// One rule runs through all of it: a bill with no customerPhone is a WALK-IN,
+// not a customer with a blank name. Walk-ins must never be counted as one giant
+// returning customer — that would make the repeat ratio, LTV and new-vs-returning
+// all quietly wrong, in the flattering direction.
+// ============================================================================
+
+/** Bills within [from, to] inclusive. Blank bounds are open. */
+export const inRange = (sales, from, to) =>
+  (sales || []).filter((s) => {
+    const d = String(s.date || "");
+    return (!from || d >= from) && (!to || d <= to);
+  });
+
+/**
+ * Revenue split between labour and stock.
+ *
+ * The most useful single number in a salon's accounts: services and retail have
+ * completely different margins, and an owner who can't see the split can't tell
+ * which half of the business is paying the rent.
+ */
+export const serviceVsProductRevenue = (sales, from, to) => {
+  let service = 0;
+  let product = 0;
+  for (const s of inRange(sales, from, to)) {
+    for (const l of s.lines || []) {
+      const amt = Number(l.amount) || 0;
+      if (isServiceLine(l)) service += amt;
+      else product += amt;
+    }
+  }
+  const total = service + product;
+  return {
+    service: round2(service),
+    product: round2(product),
+    total: round2(total),
+    servicePct: total > 0 ? round2((service / total) * 100) : 0,
+  };
+};
+
+/** Top services by revenue (or by count), from service lines only. */
+export const topServices = (sales, { metric = "revenue", limit = 10, from = "", to = "" } = {}) => {
+  const m = new Map();
+  for (const s of inRange(sales, from, to)) {
+    for (const l of s.lines || []) {
+      if (!isServiceLine(l)) continue;
+      const key = String(l.name || "").trim() || "(unnamed)";
+      const e = m.get(key) || { name: key, revenue: 0, count: 0 };
+      e.revenue += Number(l.amount) || 0;
+      e.count += Number(l.qty) || 1;
+      m.set(key, e);
+    }
+  }
+  return [...m.values()]
+    .map((e) => ({ ...e, revenue: round2(e.revenue) }))
+    .sort((a, b) => (metric === "count" ? b.count - a.count : b.revenue - a.revenue))
+    .slice(0, limit);
+};
+
+/**
+ * What share of identified customers came back.
+ *
+ * Walk-ins are excluded entirely — they have no identity, so "did they return?"
+ * is unanswerable for them, and lumping them together would answer it wrongly.
+ * The denominator is customers the salon can actually track.
+ */
+export const repeatRatio = (sales, from, to) => {
+  const visits = new Map();
+  for (const s of inRange(sales, from, to)) {
+    const p = String(s.customerPhone || "");
+    if (!p) continue; // walk-in
+    visits.set(p, (visits.get(p) || 0) + 1);
+  }
+  const identified = visits.size;
+  const repeat = [...visits.values()].filter((n) => n > 1).length;
+  return {
+    identified,
+    repeat,
+    once: identified - repeat,
+    pct: identified > 0 ? round2((repeat / identified) * 100) : 0,
+  };
+};
+
+/** Average bill value per month, with the bill count behind it. */
+export const avgBillTrend = (sales, from, to) => {
+  const m = new Map();
+  for (const s of inRange(sales, from, to)) {
+    const ym = String(s.date || "").slice(0, 7);
+    if (!ym) continue;
+    const e = m.get(ym) || { ym, total: 0, bills: 0 };
+    e.total += Number(s.total) || 0;
+    e.bills++;
+    m.set(ym, e);
+  }
+  return [...m.values()]
+    .sort((a, b) => a.ym.localeCompare(b.ym))
+    .map((e) => ({ ym: e.ym, label: monthLabel(e.ym), bills: e.bills, avg: round2(e.total / e.bills) }));
+};
+
+/**
+ * Lifetime value per identified customer, bucketed for a histogram.
+ *
+ * Fixed rupee bands rather than quantiles: an owner reads "how many customers are
+ * worth over 20k" directly, where a quantile chart needs interpreting first.
+ */
+export const ltvDistribution = (sales, buckets = [1000, 5000, 10000, 20000, 50000]) => {
+  const spend = new Map();
+  for (const s of sales || []) {
+    const p = String(s.customerPhone || "");
+    if (!p) continue;
+    spend.set(p, (spend.get(p) || 0) + (Number(s.total) || 0));
+  }
+  const bands = [];
+  for (let i = 0; i < buckets.length; i++) {
+    bands.push({
+      label: i === 0 ? "< " + inrCompact(buckets[0]) : inrCompact(buckets[i - 1]) + "–" + inrCompact(buckets[i]),
+      min: i === 0 ? 0 : buckets[i - 1],
+      max: buckets[i],
+      count: 0,
+    });
+  }
+  bands.push({ label: inrCompact(buckets[buckets.length - 1]) + "+", min: buckets[buckets.length - 1], max: Infinity, count: 0 });
+  for (const v of spend.values()) {
+    const band = bands.find((b) => v < b.max) || bands[bands.length - 1];
+    band.count++;
+  }
+  return bands;
+};
+
+/**
+ * New vs returning customers per month.
+ *
+ * "New" means their FIRST EVER bill fell in that month — computed against the whole
+ * history, not the visible range, or every customer would look new in the first
+ * month of whatever window you happened to pick.
+ */
+export const newVsReturning = (sales, from, to) => {
+  const firstSeen = new Map();
+  for (const s of sales || []) {
+    const p = String(s.customerPhone || "");
+    const d = String(s.date || "");
+    if (!p || !d) continue;
+    const prev = firstSeen.get(p);
+    if (!prev || d < prev) firstSeen.set(p, d);
+  }
+  const months = new Map();
+  const seenThisMonth = new Map(); // ym -> Set(phone), so one customer counts once per month
+  for (const s of inRange(sales, from, to)) {
+    const p = String(s.customerPhone || "");
+    const d = String(s.date || "");
+    if (!p || !d) continue;
+    const ym = d.slice(0, 7);
+    if (!months.has(ym)) {
+      months.set(ym, { ym, label: monthLabel(ym), new: 0, returning: 0 });
+      seenThisMonth.set(ym, new Set());
+    }
+    if (seenThisMonth.get(ym).has(p)) continue;
+    seenThisMonth.get(ym).add(p);
+    const isNew = String(firstSeen.get(p) || "").slice(0, 7) === ym;
+    months.get(ym)[isNew ? "new" : "returning"]++;
+  }
+  return [...months.values()].sort((a, b) => a.ym.localeCompare(b.ym));
+};
+
+/**
+ * No-show percentage across the salon, over appointments that RESOLVED.
+ * Cancellations are excluded — same reasoning as the per-stylist rate.
+ */
+export const noShowPct = (appointments, from, to) => {
+  let completed = 0;
+  let noShow = 0;
+  for (const a of appointments || []) {
+    const d = String(a.date || "");
+    if ((from && d < from) || (to && d > to)) continue;
+    if (a.status === "completed") completed++;
+    else if (a.status === "no-show") noShow++;
+  }
+  const resolved = completed + noShow;
+  return { completed, noShow, resolved, pct: resolved > 0 ? round2((noShow / resolved) * 100) : 0 };
+};
+
+/**
+ * How many customers were dormant at each month end — the trend that says whether
+ * the salon is leaking customers.
+ *
+ * Counted at each month's END using only the bills up to that point, so the line
+ * shows what was true then rather than what hindsight says.
+ */
+export const dormantTrend = (sales, from, to, dormantDays = 60) => {
+  const withPhone = (sales || []).filter((s) => s.customerPhone && s.date);
+  if (!withPhone.length) return [];
+  const out = [];
+  for (const ym of eachMonth(from, to)) {
+    const [y, m] = ym.split("-").map(Number);
+    const monthEnd = new Date(y, m, 0); // day 0 of next month = last day of this one
+    const endStr = y + "-" + String(m).padStart(2, "0") + "-" + String(monthEnd.getDate()).padStart(2, "0");
+    const lastVisit = new Map();
+    for (const s of withPhone) {
+      if (String(s.date) > endStr) continue; // no peeking at the future
+      const p = String(s.customerPhone);
+      const prev = lastVisit.get(p);
+      if (!prev || String(s.date) > prev) lastVisit.set(p, String(s.date));
+    }
+    let dormant = 0;
+    for (const d of lastVisit.values()) {
+      if (daysBetween(d, endStr) > dormantDays) dormant++;
+    }
+    out.push({ ym, label: monthLabel(ym), dormant, known: lastVisit.size });
+  }
+  return out;
+};
+
+/**
+ * Rebooking conversion: of the customers a reminder went out to, how many came
+ * back within `windowDays`.
+ *
+ * The only honest measure of whether the reminders are worth sending.
+ * `remindersSentAt` on each customer is the record of what was sent; a visit
+ * strictly AFTER the send date, inside the window, counts as a conversion.
+ *
+ * Reminders sent too recently to have had their full window are held back from the
+ * denominator — counting them would drag the rate down for no reason but impatience.
+ */
+export const rebookConversion = (customers, sales, today, windowDays = 14) => {
+  const billsByPhone = new Map();
+  for (const s of sales || []) {
+    const p = String(s.customerPhone || "");
+    if (!p || !s.date) continue;
+    if (!billsByPhone.has(p)) billsByPhone.set(p, []);
+    billsByPhone.get(p).push(String(s.date));
+  }
+  let sent = 0;
+  let converted = 0;
+  let pending = 0;
+  for (const c of customers || []) {
+    const marks = c.remindersSentAt || {};
+    for (const at of Object.values(marks)) {
+      if (!at) continue;
+      const elapsed = daysBetween(at, today);
+      if (elapsed < 0) continue; // future date — corrupt, ignore
+      if (elapsed < windowDays) { pending++; continue; }
+      sent++;
+      const visits = billsByPhone.get(String(c.phone)) || [];
+      if (visits.some((d) => d > at && daysBetween(at, d) <= windowDays)) converted++;
+    }
+  }
+  return { sent, converted, pending, pct: sent > 0 ? round2((converted / sent) * 100) : 0 };
 };
