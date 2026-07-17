@@ -32,6 +32,16 @@ import {
   blankStaff, validateStaff, makeStaff, activeStaff, staffById, staffName,
   serviceToCartLine, isServiceLine, STAFF_COLORS,
 } from "./lib/salon.js";
+import {
+  // Aliased: VendorBills (ported from the grocery core) already owns the name STATUS_COLORS
+  // for paid/partial/unpaid. Renaming that would be an edit to working, validated code for no
+  // reason other than this import's convenience.
+  STATUS_LABELS as APPT_STATUS_LABELS, STATUS_COLORS as APPT_STATUS_COLORS,
+  SLOT_MIN, DEFAULT_HOURS,
+  parseHM, toHM, toClock, endMin, slotsBetween, findConflicts,
+  validateAppointment, summarizeServices, blankAppointment, dayAppointments,
+  layoutDay, weekStrip, addDays, dayStats,
+} from "./lib/appointments.js";
 import { uploadBillProof, deleteBillProof, PROOF_ACCEPT, MAX_PROOF_BYTES } from "./lib/bills.js";
 // NOTE: src/lib/dailyBills.js (and its test suite) is carried over intact from the grocery core,
 // but Salon Manager does not ship the Daily-Need Bills section — a salon's consumable purchases
@@ -711,6 +721,7 @@ const tabEnabled = (k) => FEATURES[k] !== false;
 // switch re-checks with can() — see viewFor() below.
 const TOP_TABS = [
   ["dashboard", "⌂", "Dashboard", null],
+  ["appointments", "📅", "Appointments", "appointments.view"],
   ["billing", "₹", "Billing (POS)", "billing.use"],
   ["customers", "👤", "Customers", "customers.browse"],
   ["inventory", "▦", "Inventory", "inventory.view"],
@@ -1075,6 +1086,39 @@ function StoreManager({ user, role, onLogout }) {
     setCustomers((cs) => reconcileCustomers(cs, sales));
   }, [sales, customers, loaded]);
 
+  // "Complete → Bill": hand an appointment to the POS pre-filled with its customer, its
+  // services and who performed them, then link the two together once the bill is saved.
+  //
+  // The prefill is a one-shot handover rather than shared state: Billing owns its cart from
+  // the moment it's seeded, so the biller can add a retail product or drop a service without
+  // the diary reaching back in and overwriting their work mid-bill.
+  const [billPrefill, setBillPrefill] = useState(null);
+
+  const completeToBill = useCallback((appt) => {
+    const chosen = (appt.serviceIds || [])
+      .map((id) => services.find((s) => s.id === id))
+      .filter(Boolean);
+    if (!chosen.length) {
+      notifyRef.current?.("⚠ This appointment has no services on it — nothing to bill.");
+      return;
+    }
+    setBillPrefill({
+      appointmentId: appt.id,
+      customerPhone: appt.customerPhone || "",
+      // Attribute every line to the stylist whose column the appointment sits in — that's who
+      // did the work. Any line can still be re-attributed in the cart.
+      lines: chosen.map((s) => serviceToCartLine(s, appt.staffId)),
+    });
+    setTab("billing");
+  }, [services]);
+
+  // Once the bill is saved, stamp the link both ways: the appointment closes as completed and
+  // remembers its bill, and the bill remembers the appointment. Without the back-link a
+  // "Complete → Bill" could be run twice and bill the customer twice.
+  const linkBillToAppointment = useCallback((appointmentId, billId) => {
+    setAppointments((list) => list.map((a) => (a.id === appointmentId ? { ...a, status: "completed", billId } : a)));
+  }, []);
+
   const lowStock = items.filter((i) => i.stock <= i.lowAt);
   const alertCount = lowStock.length + items.filter((i) => { const d = daysToExpiry(i); return d != null && d <= 30; }).length;
 
@@ -1101,12 +1145,26 @@ function StoreManager({ user, role, onLogout }) {
   // `tab` is ordinary state: hiding a button is not a control. Each branch names the SAME action
   // its nav entry declares, so a tab and its view can never drift out of step.
   const guard = (action, node) => (can(role, action) ? node : <NoAccess role={role} />);
-  const dashboard = (
-    <Dashboard items={items} sales={sales} lowStock={can(role, "inventory.view") ? lowStock : []} goBilling={() => setTab("billing")} role={role} />
+  // The owner's dashboard is the shop's books — revenue, profit, margins, stock value. A worker
+  // gets a different screen entirely (their diary + their own bills), rather than the same one
+  // with pieces blanked out: an emptied-out books page reads as broken, not as "not for you".
+  const dashboard = can(role, "stats.view") ? (
+    <Dashboard
+      items={items} sales={sales} lowStock={lowStock} goBilling={() => setTab("billing")}
+      appointments={appointments} customers={customers} staff={staff} services={services}
+      goAppointments={() => setTab("appointments")}
+    />
+  ) : (
+    <WorkerDashboard
+      sales={sales} appointments={appointments} customers={customers} staff={staff}
+      services={services} user={user}
+      goBilling={() => setTab("billing")} goAppointments={() => setTab("appointments")}
+    />
   );
   const VIEWS = {
     dashboard: () => dashboard,
-    billing: () => guard("billing.use", <Billing items={items} sales={sales} services={services} staff={staff} customers={customers} setItems={setItems} setSales={setSales} setCustomers={setCustomers} store={store} notify={notify} log={addLog} role={role} />),
+    appointments: () => guard("appointments.view", <Appointments appointments={appointments} setAppointments={setAppointments} customers={customers} setCustomers={setCustomers} services={services} staff={staff} config={config} notify={notify} log={addLog} role={role} onCompleteToBill={completeToBill} />),
+    billing: () => guard("billing.use", <Billing items={items} sales={sales} services={services} staff={staff} customers={customers} setItems={setItems} setSales={setSales} setCustomers={setCustomers} store={store} notify={notify} log={addLog} role={role} user={user} prefill={billPrefill} onPrefillUsed={() => setBillPrefill(null)} onBilled={linkBillToAppointment} />),
     customers: () => guard("customers.browse", <Customers customers={customers} sales={sales} services={services} staff={staff} setCustomers={setCustomers} notify={notify} log={addLog} />),
     services: () => guard("services.manage", <Services services={services} setServices={setServices} notify={notify} log={addLog} />),
     staff: () => guard("staff.manage", <Staff staff={staff} setStaff={setStaff} notify={notify} log={addLog} />),
@@ -1223,8 +1281,103 @@ const NoAccess = ({ role }) => (
   </div>
 );
 
+// ---------- Today's appointments (shared panel) ----------
+// The single most useful thing on any salon screen: who is coming in, when, and to whom.
+function TodayAppointments({ appointments, customers, staff, services, date, goAppointments }) {
+  const day = useMemo(() => dayAppointments(appointments, date).filter((a) => a.status !== "blocked"), [appointments, date]);
+  const byPhone = useMemo(() => new Map(customers.map((c) => [c.phone, c])), [customers]);
+
+  return (
+    <section style={S.panel}>
+      <div style={{ ...S.panelHead, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span>{date === todayStr() ? "Today's appointments" : `Appointments · ${date}`}{day.length > 0 && <span style={{ fontWeight: 400, color: "#8A9C90" }}> · {day.length}</span>}</span>
+        {goAppointments && <button className="btn ghost" style={{ fontSize: 12 }} onClick={goAppointments}>Open diary</button>}
+      </div>
+      {day.length === 0 ? (
+        <Empty text="Nothing in the diary.">
+          {goAppointments && <button className="btn primary" onClick={goAppointments}>Book someone in</button>}
+        </Empty>
+      ) : (
+        <div style={{ maxHeight: 300, overflowY: "auto" }}>
+          {day.map((a) => {
+            const cust = a.customerPhone ? byPhone.get(a.customerPhone) : null;
+            const names = summarizeServices(a.serviceIds, services).names;
+            const done = a.status === "completed";
+            const dead = a.status === "cancelled" || a.status === "no-show";
+            return (
+              <div key={a.id} style={{ ...S.row, opacity: dead ? 0.5 : 1, alignItems: "flex-start" }}>
+                <span style={{ display: "flex", gap: 8, minWidth: 0 }}>
+                  <b style={{ color: "#1B5E43", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{toClock(a.startMin)}</b>
+                  <span style={{ minWidth: 0 }}>
+                    <span style={{ fontWeight: 600, textDecoration: a.status === "cancelled" ? "line-through" : "none" }}>
+                      {cust?.name || "Walk-in"}
+                    </span>
+                    <span style={{ color: "#8A9C90", fontSize: 12 }}> · {staffName(staff, a.staffId)}</span>
+                    {names.length > 0 && <div style={{ fontSize: 11.5, color: "#8A9C90" }}>{names.join(", ")}</div>}
+                  </span>
+                </span>
+                <span style={{ fontSize: 11, fontWeight: 700, color: APPT_STATUS_COLORS[a.status], whiteSpace: "nowrap" }}>
+                  {done ? "✓ " : ""}{APPT_STATUS_LABELS[a.status]}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+// ---------- Worker dashboard ----------
+// What a biller or inventory user sees instead of the owner's dashboard. Deliberately narrow:
+// today's diary, and the bills THEY rang up. Not the shop's takings, not the month, not profit.
+//
+// This is a UI control, not a boundary — workers can read the sales slice because the POS
+// cannot work otherwise (see the README). It exists so the counter screen shows a worker their
+// own job rather than the owner's books, not because it makes the numbers unreachable.
+function WorkerDashboard({ sales, appointments, customers, staff, services, user, goBilling, goAppointments }) {
+  const date = todayStr();
+  const mine = useMemo(
+    () => sales.filter((s) => s.date === date && s.billedByUid && s.billedByUid === user?.uid),
+    [sales, date, user?.uid]
+  );
+  const myTotal = money(mine.reduce((a, s) => a + (s.total || 0), 0));
+  const niceDate = new Date(date + "T00:00").toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long" });
+
+  return (
+    <div>
+      <Header title="Today" sub={niceDate}>
+        <button className="btn primary big" onClick={goBilling}>Start billing</button>
+      </Header>
+      <div style={S.cards}>
+        <Card label="Your bills today" value={mine.length} sub="rung up on this account" />
+        <Card label="You billed" value={INR(myTotal)} sub="total across your bills today" accent />
+        <Card label="In the diary" value={dayStats(appointments, date).total} sub="appointments today" />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 16 }}>
+        <TodayAppointments appointments={appointments} customers={customers} staff={staff} services={services} date={date} goAppointments={goAppointments} />
+        <section style={S.panel}>
+          <div style={S.panelHead}>Your bills today</div>
+          {mine.length === 0 ? (
+            <Empty text="You haven't billed anything yet today.">
+              <button className="btn primary" onClick={goBilling}>Start billing</button>
+            </Empty>
+          ) : (
+            [...mine].reverse().map((s) => (
+              <div key={s.id} style={S.row}>
+                <span>{s.time} · {s.customer || "Walk-in"}</span>
+                <b>{INR(s.total)}</b>
+              </div>
+            ))
+          )}
+        </section>
+      </div>
+    </div>
+  );
+}
+
 // ---------- Dashboard ----------
-function Dashboard({ items, sales, lowStock, goBilling }) {
+function Dashboard({ items, sales, lowStock, goBilling, appointments = [], customers = [], staff = [], services = [], goAppointments }) {
   const [date, setDate] = useState(todayStr());
   const isToday = date === todayStr();
   const daySales = sales.filter((s) => s.date === date);
@@ -1303,6 +1456,15 @@ function Dashboard({ items, sales, lowStock, goBilling }) {
         <Card label={monthName + " revenue"} value={INR(monthRev)} sub={"month to date" + (monthUdhari > 0 ? ` · ${INR(monthUdhari)} on udhari` : "")} />
         <Card label={monthName + " profit"} value={<>{INR(monthProfit)} <span style={{ fontSize: 14, fontWeight: 700, opacity: 0.85 }}>({monthRev > 0 ? Math.round((monthProfit / monthRev) * 100) : 0}%)</span></>} sub="month to date · after item cost · % of sales" accent />
         <Card label="Stock value" value={INR(stockValue)} sub={items.length + " items (at cost)"} />
+      </div>
+
+      {/* The diary sits directly under the numbers: the day's bookings are what the owner
+          actually acts on, and they'd be buried below the charts anywhere else. */}
+      <div style={{ marginTop: 16 }}>
+        <TodayAppointments
+          appointments={appointments} customers={customers} staff={staff} services={services}
+          date={date} goAppointments={goAppointments}
+        />
       </div>
 
       <div style={{ marginTop: 16 }}>
@@ -1609,7 +1771,7 @@ function CustomerPicker({ customers, value, onPick, onCreate, notify }) {
 }
 
 // ---------- Billing / POS ----------
-function Billing({ items, sales, services, staff, customers, setItems, setSales, setCustomers, store = STORE, notify, log, role }) {
+function Billing({ items, sales, services, staff, customers, setItems, setSales, setCustomers, store = STORE, notify, log, role, user, prefill, onPrefillUsed, onBilled }) {
   const [q, setQ] = useState("");
   const [cart, setCart] = useState([]); // {id, lineType, name, icon, unit, sellPrice, buyPrice, qty, staffId?}
   const [lastSale, setLastSale] = useState(null);
@@ -1626,6 +1788,8 @@ function Billing({ items, sales, services, staff, customers, setItems, setSales,
   // Who gets attributed (and paid commission for) the next service added. Sticky across adds:
   // one stylist usually does the whole sitting, and re-picking per line would be tedious.
   const [lineStaff, setLineStaff] = useState("");
+  // The appointment this bill closes, when we arrived here via "Complete → Bill".
+  const [fromAppointment, setFromAppointment] = useState("");
   const [paidNow, setPaidNow] = useState(""); // Udhari part-payment taken at billing time
   const [paidMode, setPaidMode] = useState("Cash"); // how that part-payment was received (UPI/Cash)
   const [discount, setDiscount] = useState(""); // optional extra discount on the whole bill
@@ -1667,6 +1831,23 @@ function Billing({ items, sales, services, staff, customers, setItems, setSales,
       .filter((c) => c.name.toLowerCase().includes(q) && c.name.toLowerCase() !== q)
       .slice(0, 6);
   }, [customer, knownCustomers]);
+
+  // Seed the bill from an appointment ("Complete → Bill"), exactly once.
+  //
+  // The handover is consumed immediately (onPrefillUsed) so the cart belongs to the biller from
+  // this point on: they can add a retail product or drop a service without the diary reaching
+  // back in and overwriting their work. Re-running this on every render would fight the user.
+  useEffect(() => {
+    if (!prefill) return;
+    setCart(prefill.lines);
+    setCustomerPhone(prefill.customerPhone || "");
+    setFromAppointment(prefill.appointmentId || "");
+    setMode("service");
+    // Sticky staff picks up whoever the appointment was with, so an added service attributes
+    // to the same person by default.
+    setLineStaff(prefill.lines.find(isServiceLine)?.staffId || "");
+    onPrefillUsed?.();
+  }, [prefill, onPrefillUsed]);
 
   // The customer this bill is for, if one has been picked. null = walk-in.
   const picked = useMemo(
@@ -1932,6 +2113,13 @@ function Billing({ items, sales, services, staff, customers, setItems, setSales,
       ...(picked ? { customerPhone: picked.phone, customer: picked.name, mobile: picked.phone } : {}),
       ...(!picked && customer.trim() ? { customer: customer.trim() } : {}),
       ...(!picked && mobile.trim() ? { mobile: mobile.trim() } : {}),
+      // Links the bill back to the appointment it closed, so the diary can show "✓ Billed"
+      // and a second Complete → Bill can't charge the customer twice.
+      ...(fromAppointment ? { appointmentId: fromAppointment } : {}),
+      // Who rang it up. Distinct from staffId on a service line — the person at the till isn't
+      // necessarily the person who did the work. This is what lets a biller's dashboard show
+      // "your bills today" without showing them the whole shop's takings.
+      ...(user?.uid ? { billedByUid: user.uid } : {}),
       // For Udhari (credit), record how much was paid now (and via UPI/Cash); rest stays outstanding.
       ...(pay === "Udhari" ? { paid: Math.min(total, Math.max(0, money(+paidNow || 0))) } : {}),
       ...(pay === "Udhari" && +paidNow > 0 ? { paidMode } : {}),
@@ -1943,6 +2131,9 @@ function Billing({ items, sales, services, staff, customers, setItems, setSales,
       const c = cart.find((x) => x.id === i.id && !isServiceLine(x));
       return c ? removeStock(i, c.qty, saleDate) : i; // FIFO deplete batches by expiry
     }));
+    // Close the appointment this bill came from and link the two. Done after the sale is in
+    // state, so the appointment is never marked completed against a bill that didn't save.
+    if (fromAppointment) onBilled?.(fromAppointment, sale.id);
     setLastSale(sale);
     const nServices = cart.filter(isServiceLine).length;
     const nProducts = cart.length - nServices;
@@ -1953,6 +2144,7 @@ function Billing({ items, sales, services, staff, customers, setItems, setSales,
     setCustomer("");
     setMobile("");
     setCustomerPhone("");
+    setFromAppointment("");
     setPaidNow("");
     setPaidMode("Cash");
     setDiscount("");
@@ -5503,6 +5695,9 @@ function StoreConfig({ config, setConfig, notify, log, user, role }) {
     name: c.name || "", tagline: c.tagline || "", address: c.address || "",
     phone: c.phone || "", pcIp: c.pcIp || "", logo: c.logo || "", paymentQr: c.paymentQr || "",
     upiId: c.upiId || "", upiName: c.upiName || "",
+    // Working hours bound the appointment grid — a booking outside them renders off-screen.
+    openTime: c.openTime || toHM(DEFAULT_HOURS.openMin),
+    closeTime: c.closeTime || toHM(DEFAULT_HOURS.closeMin),
   });
   const [draft, setDraft] = useState(() => toDraft(config));
   const [busyKey, setBusyKey] = useState(""); // "logo" | "paymentQr" while an upload is processed
@@ -5540,6 +5735,12 @@ function StoreConfig({ config, setConfig, notify, log, user, role }) {
     if (draft.upiId.trim() && !isValidUpiId(draft.upiId)) {
       return notify("⚠ Enter a valid UPI ID like mysalon@okhdfcbank, or leave it blank");
     }
+    const open = parseHM(draft.openTime);
+    const close = parseHM(draft.closeTime);
+    if (!Number.isFinite(open) || !Number.isFinite(close)) return notify("⚠ Enter valid opening and closing times");
+    // A closing time at or before opening would produce a zero/negative-height diary — no rows,
+    // no way to book anything, and no obvious cause.
+    if (close <= open) return notify("⚠ Closing time must be after opening time");
     // Spread the existing config first: shop/config is a shared singleton that holds more than
     // this form edits (loyaltyConfig lives here too). Rebuilding it from the draft alone would
     // silently wipe whatever this form doesn't know about.
@@ -5548,6 +5749,7 @@ function StoreConfig({ config, setConfig, notify, log, user, role }) {
       name: draft.name.trim(), tagline: draft.tagline.trim(), address: draft.address.trim(),
       phone: draft.phone.trim(), pcIp: draft.pcIp.trim(), logo: draft.logo || "", paymentQr: draft.paymentQr || "",
       upiId: draft.upiId.trim(), upiName: draft.upiName.trim(),
+      openTime: toHM(open), closeTime: toHM(close),
     };
     const snap = toDraft(next);
     savedRef.current = JSON.stringify(snap);
@@ -5627,6 +5829,16 @@ function StoreConfig({ config, setConfig, notify, log, user, role }) {
             The counter PC's address on the shop's local network — used to reach a local print server / POS on that machine.
             Accepts a plain IPv4, optionally with a port (e.g. <code>192.168.1.50:9100</code>).
           </div>
+
+          <div style={{ ...S.panelHead, marginTop: 16 }}>Working hours</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="Opens at"><input className="input" type="time" step={900} value={draft.openTime} onChange={(e) => set("openTime", e.target.value)} /></Field>
+            <Field label="Closes at"><input className="input" type="time" step={900} value={draft.closeTime} onChange={(e) => set("closeTime", e.target.value)} /></Field>
+          </div>
+          <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: -2 }}>
+            These bound the appointment grid: it runs from opening to closing in 15-minute rows,
+            and a booking outside them is refused rather than rendered off-screen.
+          </div>
         </section>
 
         <section style={S.panel}>
@@ -5666,6 +5878,362 @@ function StoreConfig({ config, setConfig, notify, log, user, role }) {
 
       {can(role, "users.manage") && <Users user={user} notify={notify} log={log} />}
     </div>
+  );
+}
+
+// ---------- Appointments ----------
+// A hand-rolled CSS-grid day view: one column per working stylist, 15-minute rows down the
+// side, absolutely-positioned blocks on top. No calendar library — the grid IS the layout, and
+// a dependency would be more code than this, not less.
+//
+// The vertical scale is one constant: PX_PER_MIN. Every block's top and height derive from it,
+// so the grid and the blocks can never disagree about where 3pm is.
+const PX_PER_MIN = 1.5; // 15-min slot = 22.5px — thumb-sized on a phone, a full day on a laptop
+
+function Appointments({
+  appointments, setAppointments, customers, setCustomers, services, staff, config,
+  notify, log, role, onCompleteToBill,
+}) {
+  const [date, setDate] = useState(todayStr());
+  const [editing, setEditing] = useState(null); // an appointment draft, or null
+  const [err, setErr] = useState("");
+
+  // Working hours come from Settings; the defaults are a normal Indian salon day.
+  const hours = useMemo(() => ({
+    openMin: parseHM(config?.openTime) || DEFAULT_HOURS.openMin,
+    closeMin: parseHM(config?.closeTime) || DEFAULT_HOURS.closeMin,
+  }), [config?.openTime, config?.closeTime]);
+
+  const columns = useMemo(() => activeStaff(staff), [staff]);
+  const slots = useMemo(() => slotsBetween(hours.openMin, hours.closeMin, SLOT_MIN), [hours]);
+  const gridHeight = (hours.closeMin - hours.openMin) * PX_PER_MIN;
+  const stats = useMemo(() => dayStats(appointments, date), [appointments, date]);
+  const strip = useMemo(() => weekStrip(date), [date]);
+  const byId = useMemo(() => new Map(customers.map((c) => [c.phone, c])), [customers]);
+
+  // Lay each stylist's day out independently: a clash in one chair must not shove another
+  // stylist's column around.
+  const laidByStaff = useMemo(() => {
+    const m = {};
+    for (const s of columns) m[s.id] = layoutDay(dayAppointments(appointments, date, s.id));
+    return m;
+  }, [appointments, date, columns]);
+
+  const openNew = (staffId, startMin) => {
+    setErr("");
+    setEditing({ ...blankAppointment(date, staffId, startMin, todayStr()), id: "" });
+  };
+  const openEdit = (a) => { setErr(""); setEditing({ ...a }); };
+  const close = () => { setEditing(null); setErr(""); };
+
+  const save = () => {
+    const draft = editing;
+    // Duration is derived from the chosen services, so a booking always reserves as long as
+    // the work actually takes. Blocked time is hand-set — it isn't services.
+    const summary = summarizeServices(draft.serviceIds, services);
+    const durationMin = draft.status === "blocked" ? Number(draft.durationMin) || SLOT_MIN : summary.durationMin;
+    const form = { ...draft, durationMin };
+    const problem = validateAppointment(form, appointments, hours);
+    if (problem) return setErr(problem);
+    const isNew = !form.id;
+    const rec = { ...form, id: isNew ? uid() : form.id };
+    setAppointments((list) => (isNew ? [...list, rec] : list.map((a) => (a.id === rec.id ? rec : a))));
+    const who = rec.customerPhone ? byId.get(rec.customerPhone)?.name || rec.customerPhone : "blocked time";
+    log("sale", `${isNew ? "Booked" : "Updated"} ${rec.status === "blocked" ? "blocked time" : "appointment"} — ${who} · ${date} ${toClock(rec.startMin)} · ${staffName(staff, rec.staffId)}`);
+    notify(isNew ? "✓ Booked" : "✓ Appointment updated");
+    close();
+  };
+
+  const setStatus = (a, status) => {
+    setAppointments((list) => list.map((x) => (x.id === a.id ? { ...x, status } : x)));
+    log("sale", `Appointment marked ${APPT_STATUS_LABELS[status]} — ${a.date} ${toClock(a.startMin)} · ${staffName(staff, a.staffId)}`);
+    notify(`Marked ${APPT_STATUS_LABELS[status].toLowerCase()}`);
+    close();
+  };
+
+  const remove = (a) => {
+    if (!confirm(`Delete this ${a.status === "blocked" ? "blocked time" : "appointment"}? To keep it on the record instead, mark it cancelled.`)) return;
+    setAppointments((list) => list.filter((x) => x.id !== a.id));
+    log("sale", `Deleted appointment — ${a.date} ${toClock(a.startMin)} · ${staffName(staff, a.staffId)}`);
+    notify("Deleted");
+    close();
+  };
+
+  if (columns.length === 0) {
+    return (
+      <div>
+        <Header title="Appointments" />
+        <Empty text="No active staff — the diary needs at least one stylist to have a column." />
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <Header title="Appointments" sub={`${stats.total} booked · ${stats.completed} done${stats.noShow ? ` · ${stats.noShow} no-show` : ""}`}>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <button className="btn" onClick={() => setDate(addDays(date, -1))} aria-label="Previous day">‹</button>
+          <input type="date" className="input" style={{ width: "auto" }} value={date} onChange={(e) => setDate(e.target.value || todayStr())} />
+          <button className="btn" onClick={() => setDate(addDays(date, 1))} aria-label="Next day">›</button>
+          <button className="btn" onClick={() => setDate(todayStr())} disabled={date === todayStr()}>Today</button>
+        </div>
+      </Header>
+
+      {/* Compact week strip — the fastest way to hop a few days without opening a date picker. */}
+      <div style={{ display: "flex", gap: 4, marginBottom: 12, overflowX: "auto" }}>
+        {strip.map((d) => {
+          const n = dayStats(appointments, d).total;
+          const active = d === date;
+          return (
+            <button
+              key={d} onClick={() => setDate(d)}
+              style={{
+                flex: 1, minWidth: 54, padding: "6px 4px", borderRadius: 8, cursor: "pointer",
+                border: d === todayStr() ? "1.5px solid #1B5E43" : "1px solid #DDE5DF",
+                background: active ? "#1B5E43" : "#fff", color: active ? "#fff" : "#334",
+              }}
+            >
+              <div style={{ fontSize: 10.5, opacity: 0.8 }}>{new Date(d + "T00:00").toLocaleDateString("en-IN", { weekday: "short" })}</div>
+              <div style={{ fontWeight: 800, fontSize: 14 }}>{new Date(d + "T00:00").getDate()}</div>
+              <div style={{ fontSize: 10, opacity: 0.85 }}>{n ? `${n} appt` : "—"}</div>
+            </button>
+          );
+        })}
+      </div>
+
+      <section style={{ ...S.panel, padding: 0, overflowX: "auto" }}>
+        <div style={{ display: "grid", gridTemplateColumns: `56px repeat(${columns.length}, minmax(140px, 1fr))`, minWidth: 56 + columns.length * 140 }}>
+          {/* header row */}
+          <div style={{ position: "sticky", left: 0, background: "#fff", zIndex: 2, borderBottom: "1px solid #E2EAE3" }} />
+          {columns.map((s) => (
+            <div key={s.id} style={{ padding: "8px 6px", textAlign: "center", borderBottom: "1px solid #E2EAE3", borderLeft: "1px solid #EEF3EE" }}>
+              <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                <span style={{ width: 10, height: 10, borderRadius: "50%", background: s.color, display: "inline-block" }} />
+                <span style={{ fontWeight: 700, fontSize: 13 }}>{s.name}</span>
+              </div>
+            </div>
+          ))}
+
+          {/* Time gutter. `sticky` (not `relative`) so the times stay visible while the staff
+              columns scroll sideways on a phone — and sticky is itself a non-static position,
+              so it still anchors the absolutely-placed labels below. */}
+          <div style={{ position: "sticky", left: 0, background: "#fff", zIndex: 2, height: gridHeight }}>
+            {slots.map((t) => (
+              <div
+                key={t}
+                style={{
+                  position: "absolute", top: (t - hours.openMin) * PX_PER_MIN, right: 6,
+                  fontSize: 10.5, color: t % 60 === 0 ? "#5E7468" : "#C3CFC7",
+                  fontWeight: t % 60 === 0 ? 700 : 400, transform: "translateY(-50%)",
+                }}
+              >
+                {t % 60 === 0 ? toClock(t) : ""}
+              </div>
+            ))}
+          </div>
+
+          {/* one column per stylist */}
+          {columns.map((s) => (
+            <div key={s.id} style={{ position: "relative", height: gridHeight, borderLeft: "1px solid #EEF3EE" }}>
+              {/* Empty slots: the tap target for a new booking. Rendering one button per slot
+                  (rather than one click handler with maths) means the tap target is the slot
+                  itself — which is what makes this usable with a thumb at the counter. */}
+              {slots.map((t) => (
+                <button
+                  key={t}
+                  onClick={() => can(role, "appointments.edit") && openNew(s.id, t)}
+                  aria-label={`Book ${s.name} at ${toClock(t)}`}
+                  style={{
+                    position: "absolute", top: (t - hours.openMin) * PX_PER_MIN, left: 0, right: 0,
+                    height: SLOT_MIN * PX_PER_MIN, border: "none", background: "none",
+                    borderTop: t % 60 === 0 ? "1px solid #E2EAE3" : "1px dotted #F0F4F1",
+                    cursor: can(role, "appointments.edit") ? "pointer" : "default", padding: 0,
+                  }}
+                />
+              ))}
+              {(laidByStaff[s.id] || []).map(({ appt, col, cols }) => {
+                const top = (appt.startMin - hours.openMin) * PX_PER_MIN;
+                const h = Math.max(18, (Number(appt.durationMin) || 0) * PX_PER_MIN);
+                const cust = appt.customerPhone ? byId.get(appt.customerPhone) : null;
+                const dim = appt.status === "cancelled" || appt.status === "no-show";
+                const color = APPT_STATUS_COLORS[appt.status] || s.color;
+                return (
+                  <button
+                    key={appt.id}
+                    onClick={() => openEdit(appt)}
+                    title={`${toClock(appt.startMin)}–${toClock(endMin(appt))} · ${APPT_STATUS_LABELS[appt.status]}`}
+                    style={{
+                      position: "absolute", top, height: h,
+                      left: `calc(${(col / cols) * 100}% + 2px)`, width: `calc(${100 / cols}% - 4px)`,
+                      background: appt.status === "blocked" ? "repeating-linear-gradient(45deg, #E7EBE8, #E7EBE8 5px, #DDE3DF 5px, #DDE3DF 10px)" : color,
+                      color: appt.status === "blocked" ? "#5B6B62" : "#fff",
+                      border: "none", borderRadius: 6, padding: "3px 5px", cursor: "pointer",
+                      textAlign: "left", overflow: "hidden", opacity: dim ? 0.5 : 1,
+                      textDecoration: appt.status === "cancelled" ? "line-through" : "none",
+                      fontSize: 11.5, lineHeight: 1.25,
+                    }}
+                  >
+                    <div style={{ fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                      {appt.status === "blocked" ? "⛔ Blocked" : cust?.name || "Walk-in"}
+                    </div>
+                    {h > 30 && (
+                      <div style={{ opacity: 0.9, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {toClock(appt.startMin)} · {summarizeServices(appt.serviceIds, services).names.join(", ") || appt.note || ""}
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {editing && (
+        <AppointmentModal
+          draft={editing} setDraft={setEditing} err={err}
+          services={services} staff={staff} customers={customers} setCustomers={setCustomers}
+          appointments={appointments} notify={notify} role={role}
+          onSave={save} onClose={close} onStatus={setStatus} onDelete={remove}
+          onCompleteToBill={onCompleteToBill}
+        />
+      )}
+    </div>
+  );
+}
+
+// The booking editor. One modal for create, edit, block-out and status changes — a booking is
+// a small enough thing that splitting those into separate screens would be more clicks, not
+// more clarity.
+function AppointmentModal({
+  draft, setDraft, err, services, staff, customers, setCustomers, appointments,
+  notify, role, onSave, onClose, onStatus, onDelete, onCompleteToBill,
+}) {
+  const isNew = !draft.id;
+  const isBlock = draft.status === "blocked";
+  const summary = useMemo(() => summarizeServices(draft.serviceIds, services), [draft.serviceIds, services]);
+  const live = useMemo(() => activeServices(services), [services]);
+  const set = (k, v) => setDraft((d) => ({ ...d, [k]: v }));
+
+  const toggleService = (id) =>
+    setDraft((d) => ({
+      ...d,
+      serviceIds: d.serviceIds.includes(id) ? d.serviceIds.filter((x) => x !== id) : [...d.serviceIds, id],
+    }));
+
+  // Free/busy feedback while the time is being chosen, rather than only on save. The front desk
+  // is talking to a customer — "3:15 is free" beats a rejection after the fact.
+  const clash = useMemo(() => {
+    const durationMin = isBlock ? Number(draft.durationMin) || SLOT_MIN : summary.durationMin;
+    if (!durationMin || !draft.staffId) return null;
+    return findConflicts(appointments, { ...draft, durationMin, exceptId: draft.id })[0] || null;
+  }, [draft, appointments, summary.durationMin, isBlock]);
+
+  return (
+    <Modal title={isNew ? (isBlock ? "Block out time" : "New appointment") : isBlock ? "Blocked time" : "Appointment"} onClose={onClose}>
+      {/* Blocked time is a different kind of thing — no customer, no services, just a chunk of
+          the day that isn't bookable. Toggling here rather than in a separate flow keeps the
+          "carve out lunch" case one tap away. */}
+      {isNew && (
+        <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+          {[["booked", "Appointment"], ["blocked", "Block out time"]].map(([s, label]) => (
+            <button key={s} className={"btn" + (draft.status === s ? " primary" : "")} style={{ flex: 1 }} onClick={() => set("status", s)}>{label}</button>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <Field label="Date"><input type="date" className="input" value={draft.date} onChange={(e) => set("date", e.target.value)} /></Field>
+        <Field label="Staff">
+          <select className="input" value={draft.staffId} onChange={(e) => set("staffId", e.target.value)}>
+            <option value="">Choose…</option>
+            {activeStaff(staff).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Start time">
+          <input type="time" className="input" step={SLOT_MIN * 60} value={toHM(draft.startMin)} onChange={(e) => { const v = parseHM(e.target.value); if (Number.isFinite(v)) set("startMin", v); }} />
+        </Field>
+        {isBlock ? (
+          <Field label="Length (minutes)">
+            <input className="input" type="number" min={SLOT_MIN} step={SLOT_MIN} value={draft.durationMin} onChange={(e) => set("durationMin", +e.target.value || SLOT_MIN)} />
+          </Field>
+        ) : (
+          <Field label="Ends">
+            <input className="input" value={summary.durationMin ? toClock(draft.startMin + summary.durationMin) : "—"} disabled title="Worked out from the services chosen" />
+          </Field>
+        )}
+      </div>
+
+      {!isBlock && (
+        <>
+          <Field label="Customer">
+            <CustomerPicker
+              customers={customers} value={draft.customerPhone} onPick={(p) => set("customerPhone", p)}
+              onCreate={(rec) => setCustomers((list) => [...list, rec])} notify={notify}
+            />
+          </Field>
+
+          <Field label={`Services${summary.durationMin ? ` · ${summary.durationMin} min · ${INR(summary.price)}` : ""}`}>
+            <div style={{ maxHeight: 170, overflowY: "auto", border: "1px solid #DDE5DF", borderRadius: 9, padding: 6 }}>
+              {live.length === 0 ? (
+                <div style={{ fontSize: 12.5, color: "#8A9C90", padding: 4 }}>No services on the menu yet.</div>
+              ) : live.map((s) => (
+                <label key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 2px", fontSize: 13, cursor: "pointer" }}>
+                  <input type="checkbox" checked={draft.serviceIds.includes(s.id)} onChange={() => toggleService(s.id)} />
+                  <span style={{ flex: 1 }}>{s.name}</span>
+                  <span style={{ color: "#8A9C90", fontSize: 12 }}>{s.durationMin}m</span>
+                  <span style={{ fontWeight: 600, fontSize: 12 }}>{INR(s.price)}</span>
+                </label>
+              ))}
+            </div>
+          </Field>
+        </>
+      )}
+
+      <Field label="Note">
+        <input className="input" placeholder={isBlock ? "e.g. lunch, training" : "e.g. wants the same colour as last time"} value={draft.note || ""} onChange={(e) => set("note", e.target.value)} />
+      </Field>
+
+      {clash && (
+        <div style={{ background: "#FFF4E5", border: "1px solid #F0D0A0", borderRadius: 8, padding: "7px 10px", fontSize: 12.5, color: "#8A5A14", marginBottom: 8 }}>
+          ⚠ {staffName(staff, draft.staffId)} is already busy {toClock(clash.startMin)}–{toClock(endMin(clash))}.
+        </div>
+      )}
+      {err && <div style={{ color: "#B23B2E", fontSize: 12.5, marginBottom: 8 }}>{err}</div>}
+
+      {/* Status changes only make sense on a saved booking. */}
+      {!isNew && !isBlock && (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+          {["booked", "completed", "no-show", "cancelled"].map((s) => (
+            <button
+              key={s} className={"btn small" + (draft.status === s ? " primary" : " ghost")}
+              onClick={() => onStatus(draft, s)}
+            >{APPT_STATUS_LABELS[s]}</button>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 8, justifyContent: "space-between", marginTop: 6, flexWrap: "wrap" }}>
+        <div>
+          {!isNew && can(role, "appointments.edit") && (
+            <button className="btn ghost" style={{ color: "#C44536" }} onClick={() => onDelete(draft)}>Delete</button>
+          )}
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button className="btn" onClick={onClose}>Close</button>
+          {/* The whole point of the diary: turn a finished appointment into a bill, pre-filled,
+              without re-typing the customer, the services or who did them. */}
+          {!isNew && !isBlock && draft.status !== "cancelled" && can(role, "billing.use") && (
+            draft.billId ? (
+              <span style={{ alignSelf: "center", fontSize: 12, color: "#1B5E43", fontWeight: 600 }}>✓ Billed</span>
+            ) : (
+              <button className="btn primary" onClick={() => onCompleteToBill(draft)}>Complete → Bill</button>
+            )
+          )}
+          {can(role, "appointments.edit") && <button className="btn primary" onClick={onSave}>{isNew ? "Book" : "Save"}</button>}
+        </div>
+      </div>
+    </Modal>
   );
 }
 

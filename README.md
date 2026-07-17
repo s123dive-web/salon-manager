@@ -51,8 +51,10 @@ Salon Manager is **multi-user**. The owner manages staff accounts from inside th
 | Can they… | Owner | Biller | Inventory |
 |---|:--:|:--:|:--:|
 | Billing (POS), print receipts | ✅ | ✅ | ✅ |
-| Appointments — view, book, change status | ✅ | ✅ | ✅ |
+| Appointments — view, book, change status, block time | ✅ | ✅ | ✅ |
 | Customer picker (search + quick-create) | ✅ | ✅ | ✅ |
+| Dashboard — the shop's revenue, profit and margins | ✅ | — | — |
+| Dashboard — today's diary + their own bills | ✅ | ✅ | ✅ |
 | Browse the customer database, profiles, segments | ✅ | — | — |
 | View a past bill (to reprint) | ✅ | ✅ | ✅ |
 | Edit or delete a bill | ✅ | — | — |
@@ -196,6 +198,9 @@ tested data (no clock, no randomness).
 | [`sync.js`](src/lib/sync.js) | keyed-node storage, field-level deltas, 3-way merge, role-aware slice reads | ✅ |
 | [`roles.js`](src/lib/roles.js) | the `can(role, action)` permission matrix | ✅ |
 | [`seed.js`](src/lib/seed.js) | first-run service menu, stock, staff, templates | ✅ |
+| [`customers.js`](src/lib/customers.js) | phone normalisation (the customer key) + drift-free visit/spend stats | ✅ |
+| [`salon.js`](src/lib/salon.js) | service/staff validation, commission rate resolution, bill-line types | ✅ |
+| [`appointments.js`](src/lib/appointments.js) | the overlap check, grid layout, booking validation | ✅ |
 | [`stats.js`](src/lib/stats.js) | revenue/profit series, heatmaps, break-even, salon analytics | ✅ |
 | [`parse.js`](src/lib/parse.js) | tolerant import parser (txt/csv/tsv/xls/xlsx/pdf/json) | ✅ |
 | [`backup.js`](src/lib/backup.js) | JSON/XLSX backup & restore | ✅ |
@@ -210,6 +215,24 @@ not ship the Daily-Need Bills view. A salon's consumable purchases go through **
 
 Money is handled in **paise-rounded rupees** and dates in the **local timezone**, using the
 helpers the grocery app already hardened — don't reintroduce bugs those fixed.
+
+### The appointment diary
+
+The day view is a hand-rolled CSS grid — one column per working stylist, 15-minute rows,
+absolutely-positioned blocks. There is no calendar dependency; the grid *is* the layout.
+
+Two decisions worth knowing about:
+
+- **Time is `startMin`** — minutes since midnight, local — plus a duration, not a timestamp. A
+  salon books "Tuesday at 3pm", not an instant on a global timeline, and minutes-since-midnight
+  can't be shifted by a timezone or a DST boundary.
+- **Overlap uses half-open intervals.** An appointment ending at 3:00 and one starting at 3:00
+  do *not* clash — back-to-back is a normal busy day, and closed intervals would reject the most
+  common booking pattern there is. Cancelled and no-show slots free the chair again; `blocked`
+  time does not (that's the point of it).
+
+Working hours come from **Settings** and bound the grid; a booking outside them is refused
+rather than rendered off-screen.
 
 ## Deploying
 
