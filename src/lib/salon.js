@@ -30,9 +30,18 @@ export const blankService = (createdAt = "") => ({
   commissionPct: 10,
   rebookCycleDays: 0,
   active: true,
+  // "Products used": the inventory items this service consumes, each with the quantity used per
+  // service (`qty` may be fractional — e.g. 0.25 of a bottle — to record partial/"sub" usage).
+  // A service still has no stock of its own; this is a recipe, referenced by itemId, that the
+  // Inventory catalogue owns. Legacy/seed services have no field — everything treats that as [].
+  consumables: [],
   icon: serviceIconFor("Hair"),
   createdAt,
 });
+
+/** A service's "products used" list, always a clean array (legacy services have no field). */
+export const serviceConsumables = (service) =>
+  (Array.isArray(service?.consumables) ? service.consumables : []).filter((c) => c && c.itemId);
 
 const num = (v) => {
   const n = Number(v);
@@ -57,6 +66,18 @@ export function validateService(form) {
   const rebook = num(form.rebookCycleDays);
   if (!Number.isFinite(rebook) || rebook < 0) return "Rebooking cycle can't be negative (use 0 for one-off services).";
   if (rebook > 730) return "Rebooking cycle looks wrong — that's over two years.";
+  // "Products used" (optional): every listed row must name a product exactly once and use a
+  // positive quantity. An empty/partial row is a data-entry slip, not a valid consumable.
+  const consumables = Array.isArray(form.consumables) ? form.consumables : [];
+  const seenItems = new Set();
+  for (const c of consumables) {
+    const itemId = String(c?.itemId || "").trim();
+    if (!itemId) return "Pick a product for every ‘products used’ row, or remove the empty one.";
+    if (seenItems.has(itemId)) return "A product is listed twice under ‘products used’ — combine it into one row.";
+    seenItems.add(itemId);
+    const qty = num(c?.qty);
+    if (!Number.isFinite(qty) || qty <= 0) return "Each product used needs a quantity greater than 0.";
+  }
   return null;
 }
 
@@ -71,6 +92,11 @@ export const makeService = (form, { id, createdAt = "" } = {}) => ({
   commissionPct: num(form.commissionPct) || 0,
   rebookCycleDays: num(form.rebookCycleDays) || 0,
   active: form.active !== false,
+  // Normalise "products used": keep only real rows, coerce the quantity to a number (rounded to
+  // 3 places so a fractional "sub use" like 0.125 survives without float noise reaching the DB).
+  consumables: (Array.isArray(form.consumables) ? form.consumables : [])
+    .map((c) => ({ itemId: String(c?.itemId || "").trim(), qty: Math.round((num(c?.qty) || 0) * 1000) / 1000 }))
+    .filter((c) => c.itemId && c.qty > 0),
 });
 
 export const activeServices = (services) => (services || []).filter((s) => s.active !== false);

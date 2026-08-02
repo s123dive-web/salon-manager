@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   LINE_TYPES, lineTypeOf, isServiceLine, isProductLine,
   blankService, validateService, makeService, activeServices, serviceById,
+  serviceConsumables,
   STAFF_COLORS, nextStaffColor, validateStaff, makeStaff, activeStaff,
   staffById, staffName, commissionRateFor, serviceToCartLine,
 } from "./salon.js";
@@ -124,6 +125,62 @@ describe("blankService", () => {
     const b = blankService("2026-07-17");
     expect(validateService({ ...b, name: "X" })).toBe(null);
     expect(b.createdAt).toBe("2026-07-17");
+  });
+
+  it("starts with no products used", () => {
+    expect(blankService().consumables).toEqual([]);
+  });
+});
+
+// ── products used (service → inventory consumption) ──────────────────────────────────────────
+describe("validateService — products used", () => {
+  it("accepts a service that consumes no products", () => {
+    expect(validateService({ ...okService, consumables: [] })).toBe(null);
+    expect(validateService({ ...okService, consumables: undefined })).toBe(null);
+  });
+
+  it("accepts real product rows, including a fractional ('sub use') quantity", () => {
+    expect(validateService({ ...okService, consumables: [{ itemId: "i1", qty: 1 }, { itemId: "i2", qty: 0.25 }] })).toBe(null);
+  });
+
+  it("rejects a row with no product picked", () => {
+    expect(validateService({ ...okService, consumables: [{ itemId: "", qty: 1 }] })).toMatch(/product/i);
+  });
+
+  it("rejects a zero, negative or non-numeric quantity", () => {
+    expect(validateService({ ...okService, consumables: [{ itemId: "i1", qty: 0 }] })).toMatch(/quantity/i);
+    expect(validateService({ ...okService, consumables: [{ itemId: "i1", qty: -2 }] })).toMatch(/quantity/i);
+    expect(validateService({ ...okService, consumables: [{ itemId: "i1", qty: "abc" }] })).toMatch(/quantity/i);
+  });
+
+  it("rejects the same product listed twice", () => {
+    expect(validateService({ ...okService, consumables: [{ itemId: "i1", qty: 1 }, { itemId: "i1", qty: 2 }] })).toMatch(/twice/i);
+  });
+});
+
+describe("makeService — products used", () => {
+  it("coerces quantities to numbers and rounds a fraction to 3 places", () => {
+    const s = makeService({ ...okService, consumables: [{ itemId: "i1", qty: "0.5" }, { itemId: "i2", qty: 0.12345 }] }, { id: "s1" });
+    expect(s.consumables).toEqual([{ itemId: "i1", qty: 0.5 }, { itemId: "i2", qty: 0.123 }]);
+  });
+
+  it("drops empty or invalid rows rather than persisting them", () => {
+    const s = makeService({ ...okService, consumables: [{ itemId: "", qty: 1 }, { itemId: "i1", qty: 0 }, { itemId: "i2", qty: 2 }] }, { id: "s1" });
+    expect(s.consumables).toEqual([{ itemId: "i2", qty: 2 }]);
+  });
+
+  it("defaults a legacy service (no field) to an empty list", () => {
+    expect(makeService(okService, { id: "s1" }).consumables).toEqual([]);
+  });
+});
+
+describe("serviceConsumables", () => {
+  it("returns a clean list and copes with legacy/junk shapes", () => {
+    expect(serviceConsumables({ consumables: [{ itemId: "i1", qty: 1 }] })).toEqual([{ itemId: "i1", qty: 1 }]);
+    expect(serviceConsumables({})).toEqual([]);
+    expect(serviceConsumables(null)).toEqual([]);
+    // A row with no product is not a real consumable — filtered out on read.
+    expect(serviceConsumables({ consumables: [{ itemId: "", qty: 1 }, { itemId: "i2", qty: 3 }] })).toEqual([{ itemId: "i2", qty: 3 }]);
   });
 });
 

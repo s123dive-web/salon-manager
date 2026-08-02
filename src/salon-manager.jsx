@@ -29,6 +29,7 @@ import {
 } from "./lib/customers.js";
 import {
   blankService, validateService, makeService, activeServices, serviceById,
+  serviceConsumables,
   blankStaff, validateStaff, makeStaff, activeStaff, staffById, staffName,
   serviceToCartLine, isServiceLine, STAFF_COLORS,
 } from "./lib/salon.js";
@@ -772,6 +773,11 @@ function RoleGate({ user, onLogout }) {
 // a section back, flip its flag to `true` (or remove the line).
 const FEATURES = {
   finance: false, // deprecated 2026 — kept for a possible future revival
+  // Disabled by default — the code below stays intact so any of these can be revived
+  // instantly by flipping its flag to `true` (or deleting the line).
+  raw: false, // "Data Import" — hidden from the live UI; revive by setting `raw: true`
+  barcode: false, // "Barcode Creator" — hidden from the live UI; revive by setting `barcode: true`
+  alerts: false, // "Alerts" — hidden from the live UI; revive by setting `alerts: true`
 };
 // A tab is shown unless a flag explicitly turns it off.
 const tabEnabled = (k) => FEATURES[k] !== false;
@@ -784,22 +790,24 @@ const tabEnabled = (k) => FEATURES[k] !== false;
 // apart. Hiding alone is not enough: `tab` is state, so every gated branch in the render
 // switch re-checks with can() — see viewFor() below.
 const TOP_TABS = [
+  // Order is the salon owner's front-of-house flow: overview → take money → what's sold →
+  // history → analytics, then the day-to-day rails, then the money tools.
   ["dashboard", "⌂", "Dashboard", null],
-  ["appointments", "📅", "Appointments", "appointments.view"],
   ["billing", "₹", "Billing (POS)", "billing.use"],
+  ["services", "✂", "Services", "services.manage"],
+  ["sales", "⊟", "Sales History", "sales.view"],
+  ["stats", "📊", "Stats", "stats.view"],
+  ["appointments", "📅", "Appointments", "appointments.view"],
   ["customers", "👤", "Customers", "customers.browse"],
   ["reminders", "🔔", "Reminders", "reminders.use"],
   ["inventory", "▦", "Inventory", "inventory.view"],
-  ["sales", "⊟", "Sales History", "sales.view"],
-  ["finance", "∑", "Finance", "finance.view"],
-  ["stats", "📊", "Stats", "stats.view"],
   ["udhari", "💳", "Udhari (Credit)", "udhari.manage"],
   ["expense", "⊝", "Add Expense", "expenses.manage"],
+  ["finance", "∑", "Finance", "finance.view"], // hidden via FEATURES.finance; kept for a future revival
 ];
 const OTHER_TABS = [
-  ["services", "✂", "Services", "services.manage"],
   ["packages", "🎁", "Packages", "packages.manage"],
-  ["staff", "🧑‍🎨", "Staff", "staff.manage"],
+  ["staff", "👥", "Staff", "staff.manage"],
   ["alerts", "⚠", "Alerts", "alerts.view"],
   ["vendorbills", "🧾", "Vendor Bills", "vendorBills.manage"],
   ["raw", "⇪", "Data Import", "import.use"],
@@ -1245,7 +1253,7 @@ function StoreManager({ user, role, onLogout }) {
     billing: () => guard("billing.use", <Billing items={items} sales={sales} services={services} staff={staff} customers={customers} customerPackages={customerPackages} config={config} setItems={setItems} setSales={setSales} setCustomers={setCustomers} store={store} notify={notify} log={addLog} role={role} user={user} prefill={billPrefill} onPrefillUsed={() => setBillPrefill(null)} onBilled={linkBillToAppointment} />),
     customers: () => guard("customers.browse", <Customers customers={customers} sales={sales} services={services} staff={staff} customerPackages={customerPackages} config={config} store={store} setCustomers={setCustomers} notify={notify} log={addLog} />),
     reminders: () => guard("reminders.use", <Reminders customers={customers} setCustomers={setCustomers} sales={sales} services={services} customerPackages={customerPackages} messageTemplates={messageTemplates} setMessageTemplates={setMessageTemplates} store={store} notify={notify} log={addLog} />),
-    services: () => guard("services.manage", <Services services={services} setServices={setServices} notify={notify} log={addLog} />),
+    services: () => guard("services.manage", <Services services={services} setServices={setServices} items={items} notify={notify} log={addLog} />),
     packages: () => guard("packages.manage", <Packages packages={packages} setPackages={setPackages} customerPackages={customerPackages} setCustomerPackages={setCustomerPackages} services={services} customers={customers} setCustomers={setCustomers} setSales={setSales} notify={notify} log={addLog} />),
     staff: () => guard("staff.manage", <Staff staff={staff} setStaff={setStaff} sales={sales} appointments={appointments} store={store} notify={notify} log={addLog} />),
     raw: () => guard("import.use", <RawData items={items} setItems={setItems} setSales={setSales} setExpenses={setExpenses} notify={notify} log={addLog} />),
@@ -1296,7 +1304,7 @@ function StoreManager({ user, role, onLogout }) {
           >
             <span style={{ width: 22, display: "inline-block", textAlign: "center" }}>⋯</span> Other
             <span style={{ marginLeft: "auto", fontSize: 11, opacity: 0.8 }}>{showOther ? "▾" : "▸"}</span>
-            {!showOther && alertCount > 0 && <span style={S.badge}>{alertCount}</span>}
+            {!showOther && tabEnabled("alerts") && alertCount > 0 && <span style={S.badge}>{alertCount}</span>}
           </button>
         )}
         {showOther && myOtherTabs.map(([k, ic, label]) => (
@@ -7394,13 +7402,22 @@ function CustomerProfile({ customer, sales, staff, services, customerPackages = 
 // it, and how soon the customer is due back. Those last two are why this can't just be the
 // Inventory screen with different labels — a service has no stock, but it does have a
 // commission rate and a rebooking cycle that the Reminders queue reads.
-function Services({ services, setServices, notify, log }) {
+function Services({ services, setServices, items = [], notify, log }) {
   const [q, setQ] = useState("");
   const [cat, setCat] = useState("All");
   const [showInactive, setShowInactive] = useState(false);
   const [editing, setEditing] = useState(null); // service id | "new"
   const [form, setForm] = useState(blankService());
   const [err, setErr] = useState("");
+
+  // Inventory, sorted for the "products used" picker, plus a fast id → item lookup for rendering
+  // each chosen row's name and unit. A service references products by id only; the catalogue owns
+  // their names, so a renamed product stays correctly linked.
+  const itemsSorted = useMemo(
+    () => [...items].sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""))),
+    [items]
+  );
+  const itemById = useMemo(() => new Map(items.map((i) => [i.id, i])), [items]);
 
   const filtered = useMemo(() => {
     const query = q.trim().toLowerCase();
@@ -7449,6 +7466,18 @@ function Services({ services, setServices, notify, log }) {
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
+  // "Products used" rows on the service being edited. Each row is { itemId, qty }; qty accepts a
+  // fraction so a service can record partial ("sub") use of a product — a quarter tube of colour.
+  const consumables = form.consumables || [];
+  const addConsumable = () => {
+    const used = new Set(consumables.map((c) => c.itemId));
+    const next = itemsSorted.find((i) => !used.has(i.id)); // first product not already listed
+    if (!next) return notify(itemsSorted.length ? "Every product is already on this service." : "Add products in Inventory first, then link them here.");
+    set("consumables", [...consumables, { itemId: next.id, qty: 1 }]);
+  };
+  const setConsumable = (idx, patch) => set("consumables", consumables.map((c, i) => (i === idx ? { ...c, ...patch } : c)));
+  const removeConsumable = (idx) => set("consumables", consumables.filter((_, i) => i !== idx));
+
   return (
     <div>
       <Header title="Services" sub={`${activeServices(services).length} on the menu · prices, durations, commission and rebooking cycles`}>
@@ -7485,6 +7514,9 @@ function Services({ services, setServices, notify, log }) {
                     <td>
                       {s.name}
                       {s.active === false && <span style={{ fontSize: 11, color: "#C44536" }}> · off menu</span>}
+                      {serviceConsumables(s).length > 0 && (
+                        <span style={{ fontSize: 11, color: "#8A9C90" }}> · uses {serviceConsumables(s).length} product{serviceConsumables(s).length > 1 ? "s" : ""}</span>
+                      )}
                     </td>
                     <td style={{ textAlign: "right", fontWeight: 600 }}>{INR(s.price)}</td>
                     <td style={{ textAlign: "right" }}>{s.durationMin} min</td>
@@ -7532,6 +7564,44 @@ function Services({ services, setServices, notify, log }) {
               </div>
             </div>
           </div>
+
+          {/* Products used — the inventory this service consumes. Each row is a product plus how
+              much of it one service uses; the quantity may be a fraction (0.25 of a bottle) to
+              capture partial ("sub") use. Products already listed drop out of the other pickers so
+              the same one can't be added twice. Optional — a labour-only service lists nothing. */}
+          <div style={{ marginTop: 16, borderTop: "1px solid #E7EFEA", paddingTop: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6, gap: 8 }}>
+              <div style={{ fontWeight: 700, fontSize: 13, color: "#334" }}>
+                Products used <span style={{ fontWeight: 400, color: "#8A9C90" }}>· from inventory (optional)</span>
+              </div>
+              <button type="button" className="btn ghost" style={{ fontSize: 12 }} onClick={addConsumable} disabled={itemsSorted.length === 0}>+ Add product</button>
+            </div>
+            {itemsSorted.length === 0 ? (
+              <div style={{ fontSize: 12, color: "#8A9C90" }}>No products in inventory yet — add them under Inventory, then link them here.</div>
+            ) : consumables.length === 0 ? (
+              <div style={{ fontSize: 12, color: "#8A9C90" }}>None yet. Add the products this service consumes and set how much of each it uses — fractions are fine (e.g. <b>0.25</b> of a bottle).</div>
+            ) : (
+              <div style={{ display: "grid", gap: 8 }}>
+                {consumables.map((c, idx) => {
+                  const item = itemById.get(c.itemId);
+                  const usedElsewhere = new Set(consumables.filter((_, i) => i !== idx).map((x) => x.itemId));
+                  const options = itemsSorted.filter((i) => i.id === c.itemId || !usedElsewhere.has(i.id));
+                  return (
+                    <div key={idx} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <select className="input" style={{ flex: "1 1 auto", minWidth: 120 }} value={c.itemId} onChange={(e) => setConsumable(idx, { itemId: e.target.value })} aria-label="Product">
+                        {!item && <option value={c.itemId}>⚠ product no longer in inventory</option>}
+                        {options.map((i) => <option key={i.id} value={i.id}>{i.name}{i.unit ? ` (${i.unit})` : ""}</option>)}
+                      </select>
+                      <input className="input" inputMode="decimal" style={{ width: 84, textAlign: "right" }} value={c.qty} onChange={(e) => setConsumable(idx, { qty: e.target.value })} aria-label="Quantity used per service" title="How much of this product one service uses" />
+                      <span style={{ fontSize: 12, color: "#8A9C90", minWidth: 30 }}>{item?.unit || ""}</span>
+                      <button type="button" className="btn ghost" style={{ fontSize: 12, color: "#B23B2E" }} onClick={() => removeConsumable(idx)} aria-label="Remove product">✕</button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
           {err && <div style={{ color: "#B23B2E", fontSize: 12.5, marginTop: 10 }}>{err}</div>}
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 14 }}>
             <button className="btn" onClick={close}>Cancel</button>
