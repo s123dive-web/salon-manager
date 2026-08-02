@@ -7,3 +7,7 @@ dist-ssr/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Firebase emulator scratch (see "Rules testing" in the README)
+.firebase/
+*-debug.log

@@ -365,3 +365,79 @@ to publish to. Re-run the latest workflow (or push any commit) once it's enabled
 The site then lands at `https://<user>.github.io/salon-manager/`. It will show the
 "not connected yet" sign-in screen until [`src/lib/firebase.js`](src/lib/firebase.js) has a real
 project in it.
+
+## Rules testing
+
+[`database.rules.json`](database.rules.json) is the **real** access boundary (see
+[Roles & access control](#roles--access-control)), and until now it was the one part of the
+app nothing executed. [`tests/rules/`](tests/rules/) runs the actual rules file inside the
+Firebase emulator and asserts, role by role, what the database really permits.
+
+```bash
+npm run test:rules
+```
+
+That command starts the emulators, runs the suite against them, and shuts them down — there
+is nothing to start or stop by hand, and it never touches a real project.
+
+**Java 11+ must be on your `PATH`.** The Realtime Database emulator is a JAR; without a JVM
+the command stops with `Could not spawn 'java -version'`. Any JDK or JRE will do
+([Temurin](https://adoptium.net/) is the usual choice). Everything else is already a
+devDependency.
+
+### Port map
+
+Set in [`firebase.json`](firebase.json); change them there, not in the tests — the harness
+reads the address `emulators:exec` exports and only falls back to these.
+
+| Emulator | Port |
+|---|---|
+| Realtime Database | 9000 |
+| Authentication | 9099 |
+| Emulator UI | 4000 |
+| Emulator hub (assigned by the CLI) | 4400 |
+
+### Layout
+
+| File | What it holds |
+|---|---|
+| [`tests/rules/setup.js`](tests/rules/setup.js) | the harness: emulator wiring, `asOwner()` / `asBiller()` / `asInventory()` / `asUnauth()`, seeding, per-test lifecycle |
+| [`tests/rules/rbac.test.js`](tests/rules/rbac.test.js) | the role matrix — money slices, stock, sales, config, the user registry, POS read dependencies |
+| [`tests/rules/bootstrap.test.js`](tests/rules/bootstrap.test.js) | first-owner self-registration, lockdown once claimed, unauthenticated access, last-owner lockout, deactivated users |
+
+Fixtures are written through `withSecurityRulesDisabled`, never through the rules — seeding
+through the rules would make the fixture a second, silent assertion, and a rule change would
+surface as a confusing setup error instead of a failed test.
+
+### Two constraints worth knowing before you add specs
+
+**`npm test` does not run this suite.** The pure-lib and jsdom suites must stay runnable with
+no emulator and no Java, so [`vite.config.js`](vite.config.js) excludes `tests/rules/**` and
+the rules suite has its own [`vitest.rules.config.js`](vitest.rules.config.js). CI runs
+`npm test` only.
+
+**The suite is single-threaded on purpose.** The emulator is one shared, stateful process and
+every spec wipes the database in `beforeEach`, so parallel spec files would delete each
+other's fixtures mid-assertion. `vitest.rules.config.js` sets `fileParallelism: false` and
+`maxWorkers: 1`. Don't remove either — the failures it causes are timing-dependent and look
+like flaky rules rather than a config problem.
+
+### What the suite found
+
+Two behaviours where the database is **more permissive than this README reads**. Both are
+asserted as-is, so the suite documents reality rather than the intention:
+
+- **A biller can edit an existing bill.** The rule on `shop/sales/$id` is
+  `newData.exists() || role === 'owner'`, so `newData.exists()` gates **deletes only**.
+  The role table above lists "Edit or delete a bill" as owner-only; the *delete* half is
+  rule-enforced, the *edit* half is [`roles.js`](src/lib/roles.js) and the UI. A biller can
+  also overwrite a bill somebody else rang up.
+- **The rules do not stop the last active owner from demoting, deactivating or deleting
+  themselves.** "The owner can't lock themselves out" is true of the *app*, which refuses it —
+  but the rule on `shop/users/$uid` only asks "is the actor an active owner?" and nothing
+  about the state it leaves behind. RTDB rules cannot count siblings matching a predicate, so
+  this is not expressible there; closing it server-side would need a maintained counter node
+  or a Cloud Function. Recovery from a self-lockout is a Firebase console visit.
+
+Neither is a privilege-escalation hole — both require an already-privileged actor, and no
+worker gains anything the role matrix denies them.

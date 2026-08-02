@@ -22,4 +22,10 @@ export default defineConfig(({ command }) => ({
     },
     chunkSizeWarningLimit: 900,
   },
+  test: {
+    // tests/rules/** talks to the Firebase emulator, so it cannot run under a plain
+    // `npm test` — it lives behind `npm run test:rules` (vitest.rules.config.js) and is
+    // excluded here to keep the pure-lib suites dependency-free.
+    exclude: ["**/node_modules/**", "**/dist/**", "tests/rules/**"],
+  },
 }));
