@@ -10,6 +10,20 @@
 // lineType as "product", which is exactly what a grocery-era bill was.
 
 import { serviceIconFor } from "./seed.js";
+import { isIconKey } from "./serviceIcons.js";
+
+/**
+ * The EMOJI for a service — what a bill line and a printed receipt have always shown.
+ *
+ * `service.icon` holds one of two unrelated things: the legacy emoji, or (since the icon system)
+ * an owner-chosen icon key like "manicure". A key is meaningless as text, so a receipt must fall
+ * back to the category emoji rather than print the word. On-screen icons never come through
+ * here — they go through resolveIcon().
+ */
+const serviceEmoji = (service) => {
+  const icon = service?.icon;
+  return icon && !isIconKey(icon) ? icon : serviceIconFor(service?.category);
+};
 
 export const LINE_TYPES = ["service", "product"];
 
@@ -176,7 +190,7 @@ export const serviceToCartLine = (service, staffId = "") => ({
   id: service.id,
   lineType: "service",
   name: service.name,
-  icon: service.icon || serviceIconFor(service.category),
+  icon: serviceEmoji(service),
   unit: "service",
   sellPrice: Number(service.price) || 0,
   // A service has no cost of goods: the labour cost is the commission, which is booked

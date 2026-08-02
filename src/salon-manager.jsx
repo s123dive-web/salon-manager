@@ -23,6 +23,8 @@ import {
   PRODUCT_CATEGORIES, PRODUCT_CATEGORY_ICONS, SERVICE_CATEGORIES, serviceIconFor,
   buildProducts, buildServices, buildStaff, buildTemplates,
 } from "./lib/seed.js";
+import { resolveIcon, isIconKey, ICON_KEYS, ICON_LABELS, CATEGORY_FALLBACK } from "./lib/serviceIcons.js";
+import { ServiceIcon, ServiceIconChip, ServiceIconDefs, SERVICE_ICON_CSS } from "./components/ServiceIcon.jsx";
 import {
   normalizePhone, isValidPhone, formatPhone, blankCustomer, searchCustomers,
   reconcileCustomers, billsForCustomer, toDayMonth, fromDayMonth, isValidDayMonth,
@@ -456,7 +458,18 @@ const STORE = {
   upiId: "",      // UPI VPA (e.g. salon@okhdfcbank). Set => bills show an amount-encoded QR; "" => static image
   upiName: "",    // payee name shown in the customer's UPI app; "" => fall back to the salon name
   theme: "emerald", // colour theme key (see THEMES); drives the sidebar + accent palette
+  iconStyle: "advanced", // "advanced" (glass service icons) | "basic" (flat) — see ICON_STYLES
 };
+
+// How the service icons are dressed. This is the app's [data-theme] axis: it sits on the .app
+// root and is what the icon stylesheet branches on (see SERVICE_ICON_CSS). It is deliberately
+// SEPARATE from the colour theme above — a salon picks its colour, then decides whether the
+// counter tablet gets the gilded glass chips or the flat ones that read faster in daylight.
+const ICON_STYLES = {
+  advanced: { label: "Glass", hint: "gilded chips with a soft highlight" },
+  basic: { label: "Flat", hint: "plain chips, single-colour lines" },
+};
+const ICON_STYLE_KEYS = Object.keys(ICON_STYLES);
 
 // localStorage key + reader for the salon config. Cached separately from the data cache so the
 // pre-auth Login screen can brand itself with the owner's saved salon name/logo instantly.
@@ -482,6 +495,7 @@ function effectiveStore(config = {}) {
     upiId: pick(config.upiId, ""),
     upiName: pick(config.upiName, ""),
     theme: THEMES[config.theme] ? config.theme : STORE.theme,
+    iconStyle: ICON_STYLES[config.iconStyle] ? config.iconStyle : STORE.iconStyle,
   };
 }
 
@@ -1351,8 +1365,11 @@ function StoreManager({ user, role, onLogout }) {
   const view = (VIEWS[tab] || VIEWS.dashboard)();
 
   return (
-    <div className="app" style={{ ...S.app, ...themeVars(store.theme) }}>
-      <style>{CSS}</style>
+    <div className="app" data-theme={store.iconStyle} style={{ ...S.app, ...themeVars(store.theme) }}>
+      <style>{CSS + SERVICE_ICON_CSS}</style>
+      {/* The service-icon gradients, mounted once for the whole app. Only under the glass theme:
+          the flat theme strokes in the current text colour and never references them. */}
+      {store.iconStyle === "advanced" && <ServiceIconDefs />}
       {/* sidebar */}
       <nav className="nav" style={S.nav}>
         <div style={S.logo}>
@@ -2094,6 +2111,14 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
     return [...m.entries()];
   }, [q, services]);
 
+  // Icon key per service, resolved once per menu change rather than once per render. Every tile
+  // then hands a plain string to a memoised <ServiceIcon>, so typing in the search box or adding
+  // a line to the cart re-renders the list without re-rendering 80 SVGs.
+  const serviceIcons = useMemo(
+    () => new Map((services || []).map((s) => [s.id, resolveIcon(s)])),
+    [services]
+  );
+
   // Units sold per item name — used for the best-seller ★ and as a tie-breaker.
   const soldQty = useMemo(() => {
     const m = {};
@@ -2492,13 +2517,17 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
                 <Empty text={services.length ? "No services match." : "No services on the menu yet."} />
               ) : serviceResults.map(([category, list]) => (
                 <div key={category} style={{ marginBottom: 12 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: "#8A9C90", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 6 }}>
-                    {serviceIconFor(category)} {category}
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, fontWeight: 700, color: "#8A9C90", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 6 }}>
+                    <ServiceIconChip icon={CATEGORY_FALLBACK[category] || "defaultService"} size={32} />
+                    {category}
                   </div>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                     {list.map((s) => (
                       <div key={s.id} className="pick" style={{ cursor: "pointer" }} onClick={() => addService(s)}>
-                        <div style={{ fontWeight: 700, fontSize: 13.5 }}>{s.name}</div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <ServiceIconChip icon={serviceIcons.get(s.id) || "defaultService"} size={26} />
+                          <div style={{ fontWeight: 700, fontSize: 13.5, minWidth: 0 }}>{s.name}</div>
+                        </div>
                         <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontSize: 12.5 }}>
                           <span style={{ color: "var(--brand)", fontWeight: 800 }}>{INR(s.price)}</span>
                           <span style={{ color: "#789" }}>{s.durationMin} min</span>
@@ -6113,6 +6142,7 @@ function StoreConfig({ config, setConfig, notify, log, user, role }) {
     phone: c.phone || "", pcIp: c.pcIp || "", logo: c.logo || "", paymentQr: c.paymentQr || "",
     upiId: c.upiId || "", upiName: c.upiName || "",
     theme: THEMES[c.theme] ? c.theme : "emerald",
+    iconStyle: ICON_STYLES[c.iconStyle] ? c.iconStyle : STORE.iconStyle,
     // Working hours bound the appointment grid — a booking outside them renders off-screen.
     openTime: c.openTime || toHM(DEFAULT_HOURS.openMin),
     closeTime: c.closeTime || toHM(DEFAULT_HOURS.closeMin),
@@ -6168,6 +6198,7 @@ function StoreConfig({ config, setConfig, notify, log, user, role }) {
       phone: draft.phone.trim(), pcIp: draft.pcIp.trim(), logo: draft.logo || "", paymentQr: draft.paymentQr || "",
       upiId: draft.upiId.trim(), upiName: draft.upiName.trim(),
       theme: THEMES[draft.theme] ? draft.theme : "emerald",
+      iconStyle: ICON_STYLES[draft.iconStyle] ? draft.iconStyle : STORE.iconStyle,
       openTime: toHM(open), closeTime: toHM(close),
     };
     const snap = toDraft(next);
@@ -6311,6 +6342,40 @@ function StoreConfig({ config, setConfig, notify, log, user, role }) {
         <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: 10, lineHeight: 1.5 }}>
           Sets the sidebar and accent colours across the whole app, for every signed-in device. Pick one, then <b>Save settings</b> to apply it. Charts and printed receipts keep their own colours for clarity.
         </div>
+
+        {/* Service icons — the second theme axis. Glass chips look right on a bright counter
+            tablet; flat ones read faster in a shop with sunlight on the screen. */}
+        <div style={{ ...S.panelHead, marginTop: 18 }}>Service icons</div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          {ICON_STYLE_KEYS.map((key) => {
+            const active = draft.iconStyle === key;
+            return (
+              <button
+                key={key} type="button" onClick={() => set("iconStyle", key)} aria-pressed={active}
+                data-theme={key}
+                style={{
+                  display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderRadius: 12,
+                  border: active ? "2px solid var(--brand)" : "1.5px solid #DDE8DE",
+                  background: "#fff", cursor: "pointer", fontFamily: "inherit", textAlign: "left", flex: "1 1 200px",
+                }}
+              >
+                <span style={{ display: "flex", gap: 5 }}>
+                  <ServiceIconChip icon="haircut" size={30} />
+                  <ServiceIconChip icon="facial" size={30} />
+                  <ServiceIconChip icon="spa" size={30} />
+                </span>
+                <span>
+                  <span style={{ display: "block", fontSize: 13.5, fontWeight: active ? 800 : 600, color: "#25342C" }}>{ICON_STYLES[key].label}</span>
+                  <span style={{ fontSize: 11.5, color: "#8A9C90" }}>{ICON_STYLES[key].hint}</span>
+                </span>
+                {active && <span style={{ marginLeft: "auto", fontSize: 16, fontWeight: 900, color: "var(--brand)" }}>✓</span>}
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: 8, lineHeight: 1.5 }}>
+          Icons appear on the billing screen, the appointment diary, this menu and each customer&apos;s visit history. They are worked out from the service name — override one service&apos;s icon under <b>Services → Edit</b>. Printed receipts are unaffected.
+        </div>
       </section>
 
       <section style={{ ...S.panel, marginTop: 16 }}>
@@ -6452,6 +6517,11 @@ function Appointments({
   const stats = useMemo(() => dayStats(appointments, date), [appointments, date]);
   const strip = useMemo(() => weekStrip(date), [date]);
   const byId = useMemo(() => new Map(customers.map((c) => [c.phone, c])), [customers]);
+  // Icon key per service id, for the blocks. Resolved once per menu change, not per block.
+  const iconByService = useMemo(
+    () => new Map((services || []).map((s) => [s.id, resolveIcon(s)])),
+    [services]
+  );
 
   // Lay each stylist's day out independently: a clash in one chair must not shove another
   // stylist's column around.
@@ -6599,9 +6669,16 @@ function Appointments({
                 const cust = appt.customerPhone ? byId.get(appt.customerPhone) : null;
                 const dim = appt.status === "cancelled" || appt.status === "no-show";
                 const color = APPT_STATUS_COLORS[appt.status] || s.color;
+                // The icon rides along only on blocks with room for it: two slots (30 min) or
+                // more. On a 15-minute threading slot the name is all that fits, and a glyph
+                // crowding it out would cost more than it tells anyone.
+                const roomy = (Number(appt.durationMin) || 0) >= SLOT_MIN * 2;
+                const firstService = roomy && appt.status !== "blocked" ? (appt.serviceIds || [])[0] : null;
+                const blockIcon = firstService ? iconByService.get(firstService) : null;
                 return (
                   <button
                     key={appt.id}
+                    className="svc-on-color"
                     onClick={() => openEdit(appt)}
                     title={`${toClock(appt.startMin)}–${toClock(endMin(appt))} · ${APPT_STATUS_LABELS[appt.status]}`}
                     style={{
@@ -6615,8 +6692,11 @@ function Appointments({
                       fontSize: 11.5, lineHeight: 1.25,
                     }}
                   >
-                    <div style={{ fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                      {appt.status === "blocked" ? "⛔ Blocked" : cust?.name || "Walk-in"}
+                    <div style={{ display: "flex", alignItems: "center", gap: 4, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden" }}>
+                      {blockIcon && <ServiceIcon icon={blockIcon} size={14} />}
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {appt.status === "blocked" ? "⛔ Blocked" : cust?.name || "Walk-in"}
+                      </span>
                     </div>
                     {h > 30 && (
                       <div style={{ opacity: 0.9, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -7384,6 +7464,12 @@ function CustomerProfile({ customer, sales, staff, services, customerPackages = 
     [customerPackages, customer.phone, today]
   );
 
+  // Visit history draws an icon per service line. A bill line points at a service by id, but the
+  // service may since have been renamed or taken off the menu — so fall back to resolving from
+  // the name snapshotted on the line itself, which is what the customer actually had.
+  const svcById = useMemo(() => new Map((services || []).map((s) => [s.id, s])), [services]);
+  const lineIcon = (line) => resolveIcon(svcById.get(line.serviceId) || { name: line.name });
+
   // What they're due for next: for each service they've had, when its rebooking cycle lands.
   // Overdue first — that's the list worth acting on.
   const nextDue = useMemo(() => {
@@ -7501,10 +7587,13 @@ function CustomerProfile({ customer, sales, staff, services, customerPackages = 
                   <td style={{ whiteSpace: "nowrap" }}>{b.date}</td>
                   <td style={{ fontSize: 12.5 }}>
                     {(b.lines || []).map((l, i) => (
-                      <div key={i} style={{ color: isServiceLine(l) ? "#334" : "#6B7E74" }}>
-                        {l.name}
-                        {l.qty > 1 ? ` ×${l.qty}` : ""}
-                        {isServiceLine(l) && l.staffId ? <span style={{ color: "#8A9C90" }}> · {staffName(staff, l.staffId)}</span> : null}
+                      <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, color: isServiceLine(l) ? "#334" : "#6B7E74" }}>
+                        {isServiceLine(l) && <ServiceIconChip icon={lineIcon(l)} size={20} />}
+                        <span>
+                          {l.name}
+                          {l.qty > 1 ? ` ×${l.qty}` : ""}
+                          {isServiceLine(l) && l.staffId ? <span style={{ color: "#8A9C90" }}> · {staffName(staff, l.staffId)}</span> : null}
+                        </span>
                       </div>
                     ))}
                   </td>
@@ -7629,7 +7718,10 @@ function Services({ services, setServices, items = [], notify, log }) {
         <Empty text="No services match." />
       ) : grouped.map(([category, list]) => (
         <section key={category} style={{ ...S.panel, marginBottom: 14 }}>
-          <div style={S.panelHead}>{serviceIconFor(category)} {category} <span style={{ fontWeight: 400, color: "#8A9C90" }}>· {list.length}</span></div>
+          <div style={{ ...S.panelHead, gap: 8 }}>
+            <ServiceIconChip icon={CATEGORY_FALLBACK[category] || "defaultService"} size={26} />
+            {category} <span style={{ fontWeight: 400, color: "#8A9C90", marginLeft: 6 }}>· {list.length}</span>
+          </div>
           <div style={{ overflowX: "auto" }}>
             <table className="tbl" style={{ width: "100%" }}>
               <thead>
@@ -7639,11 +7731,16 @@ function Services({ services, setServices, items = [], notify, log }) {
                 {list.map((s) => (
                   <tr key={s.id} style={s.active === false ? { opacity: 0.5 } : undefined}>
                     <td>
-                      {s.name}
-                      {s.active === false && <span style={{ fontSize: 11, color: "#C44536" }}> · off menu</span>}
-                      {serviceConsumables(s).length > 0 && (
-                        <span style={{ fontSize: 11, color: "#8A9C90" }}> · uses {serviceConsumables(s).length} product{serviceConsumables(s).length > 1 ? "s" : ""}</span>
-                      )}
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                        <ServiceIconChip icon={resolveIcon(s)} size={24} />
+                        <span>
+                          {s.name}
+                          {s.active === false && <span style={{ fontSize: 11, color: "#C44536" }}> · off menu</span>}
+                          {serviceConsumables(s).length > 0 && (
+                            <span style={{ fontSize: 11, color: "#8A9C90" }}> · uses {serviceConsumables(s).length} product{serviceConsumables(s).length > 1 ? "s" : ""}</span>
+                          )}
+                        </span>
+                      </span>
                     </td>
                     <td style={{ textAlign: "right", fontWeight: 600 }}>{INR(s.price)}</td>
                     <td style={{ textAlign: "right" }}>{s.durationMin} min</td>
@@ -7672,7 +7769,17 @@ function Services({ services, setServices, items = [], notify, log }) {
               <Field label="Name"><input className="input" autoFocus value={form.name} onChange={(e) => set("name", e.target.value)} /></Field>
             </div>
             <Field label="Category">
-              <select className="input" value={form.category} onChange={(e) => { set("category", e.target.value); set("icon", serviceIconFor(e.target.value)); }}>
+              {/* Changing the category refreshes the legacy emoji this record has always carried
+                  — but never touches a deliberate icon override (which lives in the same field;
+                  isIconKey tells the two apart). */}
+              <select
+                className="input" value={form.category}
+                onChange={(e) => setForm((f) => ({
+                  ...f,
+                  category: e.target.value,
+                  icon: isIconKey(f.icon) ? f.icon : serviceIconFor(e.target.value),
+                }))}
+              >
                 {SERVICE_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
               </select>
             </Field>
@@ -7689,6 +7796,46 @@ function Services({ services, setServices, items = [], notify, log }) {
                 How long until the customer is typically due again — this drives the Reminders queue.
                 Use <b>0</b> for one-off work like bridal makeup, which should never prompt a reminder.
               </div>
+            </div>
+          </div>
+
+          {/* Icon — automatic by default, overridable per service.
+              The icon is normally worked out from the name every time it is drawn, so a menu
+              that gets renamed or reorganised keeps sensible icons for free. This picker is the
+              escape hatch for the one service the keywords read wrong ("Signature Ritual No. 4"),
+              and it is the ONLY thing that writes an icon into the data. */}
+          <div style={{ marginTop: 16, borderTop: "1px solid #E7EFEA", paddingTop: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, gap: 8, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 700, fontSize: 13, color: "#334" }}>
+                <ServiceIconChip icon={resolveIcon(form)} size={30} />
+                Icon{" "}
+                <span style={{ fontWeight: 400, color: "#8A9C90" }}>
+                  {isIconKey(form.icon) ? `· ${ICON_LABELS[form.icon]}, chosen by you` : "· automatic, from the name"}
+                </span>
+              </div>
+              {isIconKey(form.icon) && (
+                <button type="button" className="btn ghost" style={{ fontSize: 12 }} onClick={() => set("icon", serviceIconFor(form.category))}>
+                  Back to automatic
+                </button>
+              )}
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(44px, 1fr))", gap: 6 }}>
+              {ICON_KEYS.map((key) => {
+                const chosen = form.icon === key;
+                return (
+                  <button
+                    key={key} type="button" title={ICON_LABELS[key]} aria-label={ICON_LABELS[key]} aria-pressed={chosen}
+                    onClick={() => set("icon", key)}
+                    style={{
+                      display: "grid", placeItems: "center", padding: 5, cursor: "pointer", borderRadius: 10,
+                      border: chosen ? "2px solid var(--brand)" : "1.5px solid #DDE8DE",
+                      background: chosen ? "var(--brand-soft)" : "#fff",
+                    }}
+                  >
+                    <ServiceIconChip icon={key} size={26} />
+                  </button>
+                );
+              })}
             </div>
           </div>
 
@@ -8751,15 +8898,15 @@ function Modal({ title, children, onClose }) {
 
 // ---------- styles ----------
 const S = {
-  app: { display: "flex", minHeight: "100vh", background: "var(--app-bg)", fontFamily: "'Segoe UI', system-ui, -apple-system, sans-serif", color: "#1E2421" },
+  app: { display: "flex", minHeight: "100vh", background: "var(--bg-base, var(--app-bg))", backgroundImage: "var(--bg-gradient, none)", backgroundAttachment: "fixed", fontFamily: "'Segoe UI', system-ui, -apple-system, sans-serif", color: "var(--text-hi, #1E2421)" },
   nav: { width: 210, background: "var(--ink)", color: "var(--nav-hi)", display: "flex", flexDirection: "column", gap: 4, padding: "16px 10px", position: "sticky", top: 0, height: "100vh", boxSizing: "border-box", overflowY: "auto", overflowX: "hidden" },
   logo: { display: "flex", gap: 10, alignItems: "center", padding: "4px 8px 18px" },
   logoMark: { width: 38, height: 38, borderRadius: 10, background: "#E8A33D", color: "var(--ink)", display: "grid", placeItems: "center", fontWeight: 800, fontSize: 17 },
   main: { flex: 1, padding: "26px 30px", maxWidth: 1280, margin: "0 auto", width: "100%", boxSizing: "border-box" },
   cards: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 },
-  card: { background: "#fff", borderRadius: 14, padding: "16px 18px", border: "1px solid #E2EAE3" },
-  panel: { background: "#fff", borderRadius: 14, padding: 16, border: "1px solid #E2EAE3" },
-  panelHead: { fontWeight: 800, fontSize: 13.5, textTransform: "uppercase", letterSpacing: "0.05em", color: "#3A5547", display: "flex", alignItems: "center", marginBottom: 10 },
+  card: { background: "var(--surface, #fff)", borderRadius: 14, padding: "16px 18px", border: "1px solid var(--border, #E2EAE3)" },
+  panel: { background: "var(--surface, #fff)", borderRadius: 14, padding: 16, border: "1px solid var(--border, #E2EAE3)" },
+  panelHead: { fontWeight: 800, fontSize: 13.5, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--panelhead, #3A5547)", display: "flex", alignItems: "center", marginBottom: 10 },
   row: { display: "flex", justifyContent: "space-between", padding: "8px 2px", borderBottom: "1px dashed #E5ECE6", fontSize: 13.5 },
   receipt: { background: "#FFFDF6", borderRadius: 4, padding: "18px 16px", border: "1px solid #E8E2CF", boxShadow: "0 2px 10px rgba(40,60,40,.07)", alignSelf: "start", backgroundImage: "repeating-linear-gradient(transparent, transparent 27px, rgba(180,170,140,.12) 28px)" },
   receiptHead: { textAlign: "center", fontWeight: 800, letterSpacing: "0.25em", fontSize: 12, color: "#6B6347", borderBottom: "2px dashed #D8D0B8", paddingBottom: 10, marginBottom: 8 },
