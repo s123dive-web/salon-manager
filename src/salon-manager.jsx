@@ -347,7 +347,7 @@ function UpiQrPreview({ store, amount }) {
   return (
     <div style={{ textAlign: "center", marginTop: 10, padding: 8, background: "#fff", border: "1px solid #E2EAE3", borderRadius: 10 }}>
       <img src={src} alt="Scan to pay" style={{ width: 150, height: 150, objectFit: "contain", imageRendering: uri ? "pixelated" : "auto" }} />
-      <div style={{ fontSize: 11.5, fontWeight: 700, color: "#3A5547" }}>Scan to Pay{amt} · PhonePe / UPI</div>
+      <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--panelhead, #3A5547)" }}>Scan to Pay{amt} · PhonePe / UPI</div>
     </div>
   );
 }
@@ -690,7 +690,7 @@ function Login() {
         </div>
         <h2 style={{ fontSize: 16, margin: "18px 0 12px" }}>Sign in</h2>
         {!isFirebaseConfigured && (
-          <div style={{ background: "#FFF6E5", border: "1px solid #F0D9A8", borderRadius: 9, padding: "10px 12px", marginBottom: 12, fontSize: 12.5, color: "#7A5B14", lineHeight: 1.6 }}>
+          <div style={{ background: "var(--tint-warm, #FFF6E5)", border: "1px solid var(--tint-warm-border, #F0D9A8)", borderRadius: 9, padding: "10px 12px", marginBottom: 12, fontSize: 12.5, color: "#7A5B14", lineHeight: 1.6 }}>
             <b>Not connected yet.</b> This build still has the placeholder Firebase config, so
             sign-in and sync are inactive. Create a Firebase project and fill in
             {" "}<code>src/lib/firebase.js</code> — the setup steps are in that file and in the README.
@@ -1921,7 +1921,7 @@ function CustomerPicker({ customers, value, onPick, onCreate, notify }) {
 
   if (picked) {
     return (
-      <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#EEF6F1", border: "1px solid #CFE3D7", borderRadius: 9, padding: "7px 10px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, background: "var(--surface-2, #EEF6F1)", border: "1px solid var(--tint-info-border, #CFE3D7)", borderRadius: 9, padding: "7px 10px" }}>
         <span style={{ width: 26, height: 26, borderRadius: "50%", background: "var(--brand)", color: "#fff", display: "grid", placeItems: "center", fontWeight: 700, fontSize: 12, flexShrink: 0 }}>
           {String(picked.name || "?").trim().charAt(0).toUpperCase()}
         </span>
@@ -1960,11 +1960,11 @@ function CustomerPicker({ customers, value, onPick, onCreate, notify }) {
         }}
       />
       {open && (q.trim() || results.length > 0) && (
-        <div style={{ position: "absolute", zIndex: 30, top: "100%", left: 0, right: 0, background: "#fff", border: "1px solid #DDE5DF", borderRadius: 9, marginTop: 4, boxShadow: "0 10px 26px rgba(0,0,0,.13)", overflow: "hidden" }}>
+        <div style={{ position: "absolute", zIndex: 30, top: "100%", left: 0, right: 0, background: "var(--surface, #fff)", border: "1px solid var(--border, #DDE5DF)", borderRadius: 9, marginTop: 4, boxShadow: "0 10px 26px rgba(0,0,0,.13)", overflow: "hidden" }}>
           {results.map((c) => (
             <button
               key={c.phone} onClick={() => pick(c)}
-              style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 10px", border: "none", background: "none", cursor: "pointer", borderBottom: "1px solid #F0F4F1" }}
+              style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 10px", border: "none", background: "none", cursor: "pointer", borderBottom: "1px solid var(--border, #F0F4F1)" }}
             >
               <div style={{ fontWeight: 600, fontSize: 13 }}>{c.name || "(no name)"}</div>
               <div style={{ fontSize: 11.5, color: "var(--text-mid, #6B7E74)" }}>
@@ -1976,7 +1976,7 @@ function CustomerPicker({ customers, value, onPick, onCreate, notify }) {
           {unknownNumber && (
             <button
               onClick={() => startCreate(unknownNumber)}
-              style={{ display: "block", width: "100%", textAlign: "left", padding: "9px 10px", border: "none", background: "#F4FAF6", cursor: "pointer", color: "var(--brand)", fontWeight: 600, fontSize: 13 }}
+              style={{ display: "block", width: "100%", textAlign: "left", padding: "9px 10px", border: "none", background: "var(--surface-2, #F4FAF6)", cursor: "pointer", color: "var(--brand)", fontWeight: 600, fontSize: 13 }}
             >
               + Add {formatPhone(unknownNumber)} as a new customer
             </button>
@@ -2502,7 +2502,7 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
             <>
               {/* Who's doing the work. Sticky across adds — one stylist usually does the whole
                   sitting — but each line can be re-attributed in the cart. */}
-              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12, padding: "8px 10px", background: "#F4F7F4", borderRadius: 8, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12, padding: "8px 10px", background: "var(--surface-2, #F4F7F4)", borderRadius: 8, flexWrap: "wrap" }}>
                 <span style={{ fontSize: 11.5, fontWeight: 700, color: "#465", whiteSpace: "nowrap" }}>Performed by</span>
                 <select className="input" style={{ flex: 1, minWidth: 130 }} value={lineStaff} onChange={(e) => setLineStaff(e.target.value)}>
                   <option value="">Choose staff…</option>
@@ -2531,7 +2531,7 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
                         </div>
                         <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontSize: 12.5 }}>
                           <span style={{ color: "var(--brand)", fontWeight: 800 }}>{INR(s.price)}</span>
-                          <span style={{ color: "#789" }}>{s.durationMin} min</span>
+                          <span style={{ color: "var(--text-mid, #789)" }}>{s.durationMin} min</span>
                         </div>
                       </div>
                     ))}
@@ -2543,7 +2543,7 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
           <>
           {/* Misc row → quick "add & catalogue": bills the item AND registers it in inventory
               (opening stock 20, auto category). Barcode is optional; given → it scans next time. */}
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", marginBottom: 12, padding: "8px 10px", background: "#F4F7F4", borderRadius: 8 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", marginBottom: 12, padding: "8px 10px", background: "var(--surface-2, #F4F7F4)", borderRadius: 8 }}>
             <span style={{ fontSize: 11.5, fontWeight: 700, color: "#465", whiteSpace: "nowrap" }}>🧾 Misc</span>
             <input ref={miscNameRef} className="input" style={{ flex: 1, minWidth: 90 }} placeholder="Name" value={miscName} onChange={(e) => setMiscName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addMisc(); }} aria-label="Item name" />
             <input className="input" style={{ flex: 1, minWidth: 100 }} placeholder="Barcode (optional)" value={miscCode} onChange={(e) => setMiscCode(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addMisc(); }} aria-label="Item barcode (optional)" title="Barcode (optional) — scan or type so this item scans next time" />
@@ -2557,10 +2557,10 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
               return (
                 <div key={i.id} className="pick" style={{ position: "relative", cursor: inStock ? "pointer" : "default", background: inStock ? undefined : "#F0F2F0" }} onClick={inStock ? () => add(i) : undefined}>
                   <button title="Add stock" aria-label={"Add stock to " + i.name} onClick={(e) => { e.stopPropagation(); setStockFor(editing ? null : i.id); setStockQty(""); }}
-                    style={{ position: "absolute", top: 6, right: 6, width: 22, height: 22, borderRadius: 6, border: "1px solid #BBD3C2", background: "#fff", color: "var(--brand)", fontWeight: 800, cursor: "pointer", lineHeight: 1, padding: 0 }}>＋</button>
+                    style={{ position: "absolute", top: 6, right: 6, width: 22, height: 22, borderRadius: 6, border: "1px solid var(--border, #BBD3C2)", background: "var(--surface, #fff)", color: "var(--brand)", fontWeight: 800, cursor: "pointer", lineHeight: 1, padding: 0 }}>＋</button>
                   <div style={{ fontWeight: 700, fontSize: 13.5, paddingRight: 26 }}><span style={{ marginRight: 5 }}>{i.icon || "📦"}</span>{i.name}{soldQty[i.name] ? <span style={{ color: "#E8A33D", fontSize: 11, marginLeft: 4 }} title="best-seller">★</span> : null}</div>
                   <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontSize: 12.5 }}>
-                    <span style={{ color: "var(--brand)", fontWeight: 800 }}>{INR(i.sellPrice)}<span style={{ color: "#8AA", fontWeight: 500 }}>/{i.unit}</span></span>
+                    <span style={{ color: "var(--brand)", fontWeight: 800 }}>{INR(i.sellPrice)}<span style={{ color: "var(--text-mid, #8AA)", fontWeight: 500 }}>/{i.unit}</span></span>
                     <span style={{ color: !inStock || i.stock <= i.lowAt ? "#C44536" : "#789", fontWeight: !inStock ? 600 : 400 }}>{!inStock ? "Out of stock" : i.stock + " left"}</span>
                   </div>
                   {editing && (
@@ -2607,7 +2607,7 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
                 <div key={c.id} style={{ ...S.rcptLine, flexWrap: "wrap" }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}><span style={{ marginRight: 4 }}>{c.icon || "📦"}</span>{c.name}</div>
-                    <div style={{ fontSize: 11.5, color: "#777" }}>{INR(c.sellPrice)} × {c.qty} {c.unit}</div>
+                    <div style={{ fontSize: 11.5, color: "var(--text-mid, #777)" }}>{INR(c.sellPrice)} × {c.qty} {c.unit}</div>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <button className="qty" aria-label={"Decrease " + c.name} onClick={() => setQty(c.id, c.qty - 1)}>−</button>
@@ -2631,7 +2631,7 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
                 </div>
               ))}
               {/* Optional additional discount on the whole bill (₹ off, or a % of the subtotal). */}
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, paddingTop: 10, borderTop: "1px dashed #E0D9C4" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, paddingTop: 10, borderTop: "1px dashed var(--receipt-rule, #E0D9C4)" }}>
                 <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-mid, #6B7E74)" }}>Additional discount</span>
                 <div style={{ display: "flex", gap: 4, marginLeft: "auto", alignItems: "center" }}>
                   {["₹", "%"].map((m) => (
@@ -2655,7 +2655,7 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
                   able to redeem — an always-visible "0 points available" row is clutter at a
                   till that's trying to be fast. */}
               {picked && rules.enabled && maxPts > 0 && (
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, paddingTop: 10, borderTop: "1px dashed #E0D9C4" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, paddingTop: 10, borderTop: "1px dashed var(--receipt-rule, #E0D9C4)" }}>
                   <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-mid, #6B7E74)" }}>
                     Use points <span style={{ fontWeight: 400 }}>({ptsBalance} available)</span>
                   </span>
@@ -2676,7 +2676,7 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
               )}
               {/* Say when the typed number was trimmed, rather than silently ignoring it. */}
               {picked && Math.floor(+redeemPts || 0) > maxPts && maxPts > 0 && (
-                <div style={{ fontSize: 11.5, color: "#8A5A14", marginTop: 2 }}>
+                <div style={{ fontSize: 11.5, color: "var(--warn, #8A5A14)", marginTop: 2 }}>
                   Capped at {maxPts} points on this bill ({rules.maxRedeemPctOfBill}% limit).
                 </div>
               )}
@@ -2719,12 +2719,12 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
                       onBlur={() => setTimeout(() => setCustFocus(false), 120)}
                       aria-label="Customer name" />
                     {custFocus && custSuggestions.length > 0 && (
-                      <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 30, background: "#fff", border: "1px solid #DDE8DE", borderRadius: 9, marginTop: 2, boxShadow: "0 8px 24px rgba(0,0,0,.14)", overflow: "hidden" }}>
+                      <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 30, background: "var(--surface, #fff)", border: "1px solid var(--border, #DDE8DE)", borderRadius: 9, marginTop: 2, boxShadow: "0 8px 24px rgba(0,0,0,.14)", overflow: "hidden" }}>
                         {custSuggestions.map((c) => (
                           // onMouseDown (not onClick) so selection fires before the input's blur closes the list.
                           <button key={c.name} type="button"
                             onMouseDown={(e) => { e.preventDefault(); setCustomer(c.name); if (c.mobile) setMobile(c.mobile); setCustFocus(false); }}
-                            style={{ display: "flex", justifyContent: "space-between", gap: 8, width: "100%", textAlign: "left", background: "none", border: "none", borderBottom: "1px solid #F0F4F0", padding: "8px 10px", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>
+                            style={{ display: "flex", justifyContent: "space-between", gap: 8, width: "100%", textAlign: "left", background: "none", border: "none", borderBottom: "1px solid var(--border, #F0F4F0)", padding: "8px 10px", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>
                             <span style={{ fontWeight: 600 }}>{c.name}</span>
                             <span style={{ color: "var(--text-mid, #8A9C90)" }}>{c.mobile || "—"}</span>
                           </button>
@@ -2771,7 +2771,7 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
         <Modal title="No item found" onClose={() => { setNotFound(null); searchRef.current?.focus(); }}>
           <div style={{ fontSize: 14, color: "#465", lineHeight: 1.6 }}>
             No item in your inventory matches:
-            <div style={{ margin: "10px 0", fontFamily: "monospace", fontSize: 16, fontWeight: 800, textAlign: "center", background: "#F4F7F4", padding: "10px 12px", borderRadius: 8, wordBreak: "break-all" }}>{notFound}</div>
+            <div style={{ margin: "10px 0", fontFamily: "monospace", fontSize: 16, fontWeight: 800, textAlign: "center", background: "var(--surface-2, #F4F7F4)", padding: "10px 12px", borderRadius: 8, wordBreak: "break-all" }}>{notFound}</div>
             Add it in the <b>🧾 Misc</b> row (with this barcode) so it scans here next time.
           </div>
           <button
@@ -3174,7 +3174,7 @@ function Inventory({ items, setItems, notify, log, cats = CATEGORIES, onAddCateg
                       })()}
                     </td>
                     <td style={{ color: "#677" }}>{i.category}</td>
-                    <td style={{ color: "#789", whiteSpace: "nowrap", fontSize: 12.5 }}>{i.createdAt || "—"}{i.updatedAt && i.updatedAt !== i.createdAt ? <span title={"edited " + i.updatedAt}> ✎</span> : null}</td>
+                    <td style={{ color: "var(--text-mid, #789)", whiteSpace: "nowrap", fontSize: 12.5 }}>{i.createdAt || "—"}{i.updatedAt && i.updatedAt !== i.createdAt ? <span title={"edited " + i.updatedAt}> ✎</span> : null}</td>
                     <td style={{ textAlign: "right" }}>{INR(i.buyPrice)}</td>
                     <td style={{ textAlign: "right", fontWeight: 700 }}>{INR(i.sellPrice)}</td>
                     <td style={{ textAlign: "right", color: "var(--brand)" }}>{i.buyPrice ? Math.round(((i.sellPrice - i.buyPrice) / i.buyPrice) * 100) + "%" : "—"}</td>
@@ -3192,7 +3192,7 @@ function Inventory({ items, setItems, notify, log, cats = CATEGORIES, onAddCateg
                   )}
                   {!quickEdit && isOpen && (
                     <tr>
-                      <td colSpan={9} style={{ background: "#F7FAF7" }}>
+                      <td colSpan={9} style={{ background: "var(--surface-2, #F7FAF7)" }}>
                         {batchEdit?.id === i.id ? (
                           <div onClick={stop}>
                             <table className="tbl" style={{ margin: 0 }}>
@@ -3537,7 +3537,7 @@ function BarcodeCreator({ items, setItems, store = STORE, notify, log }) {
           <div style={{ display: "grid", placeItems: "center", padding: "10px 0 16px" }}>
             <div style={{
               width: 230, minHeight: 130, border: "1px dashed #cfcfcf", borderRadius: 6, padding: "8px 10px",
-              display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "space-between", textAlign: "center", background: "#fff",
+              display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "space-between", textAlign: "center", background: "var(--surface, #fff)",
             }}>
               <div style={{ fontSize: 10, fontWeight: 800, color: "var(--ink)" }}>{store.name}</div>
               <div style={{ fontSize: 12.5, fontWeight: 700, lineHeight: 1.1 }}>{name || <span style={{ color: "#AAB" }}>Product name</span>}</div>
@@ -4253,7 +4253,7 @@ function SalesHistory({ sales, items, staff, services = [], customerPackages = [
                   {" "}{open === s.id ? "▾" : "▸"}</span>
               </div>
               {(open === s.id || searching) && (
-                <div style={{ background: "#F4F7F4", borderRadius: 8, padding: "8px 12px", margin: "0 0 8px" }}>
+                <div style={{ background: "var(--surface-2, #F4F7F4)", borderRadius: 8, padding: "8px 12px", margin: "0 0 8px" }}>
                   {s.lines.map((l, i) => (
                     <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "3px 0" }}>
                       <span>
@@ -4319,7 +4319,7 @@ function SalesHistory({ sales, items, staff, services = [], customerPackages = [
           </table>
 
           {/* Add items on the go — tap a catalogue match, or quick-catalogue a brand-new item. */}
-          <div style={{ marginTop: 4, marginBottom: 6, padding: "8px 10px", background: "#F4F7F4", borderRadius: 8 }}>
+          <div style={{ marginTop: 4, marginBottom: 6, padding: "8px 10px", background: "var(--surface-2, #F4F7F4)", borderRadius: 8 }}>
             <div style={{ fontSize: 11.5, fontWeight: 700, color: "#465", marginBottom: 6 }}>Add item to this bill</div>
             <input
               className="input"
@@ -4330,7 +4330,7 @@ function SalesHistory({ sales, items, staff, services = [], customerPackages = [
               aria-label="Search catalogue to add an item"
             />
             {addMatches.length > 0 && (
-              <div style={{ marginTop: 6, maxHeight: 176, overflowY: "auto", border: "1px solid #E3EAE3", borderRadius: 8, background: "#fff" }}>
+              <div style={{ marginTop: 6, maxHeight: 176, overflowY: "auto", border: "1px solid var(--border, #E3EAE3)", borderRadius: 8, background: "var(--surface, #fff)" }}>
                 {addMatches.map((i) => {
                   const inStock = (+i.stock || 0) > 0;
                   return (
@@ -4399,7 +4399,7 @@ function SalesHistory({ sales, items, staff, services = [], customerPackages = [
           <div style={{ fontSize: 12.5, color: "var(--text-mid, #6B7E74)", marginBottom: 10, lineHeight: 1.5 }}>
             Original total <b>{INR(splitting.total)}</b>. Give each part a date and an amount — by default it's divided equally, but you can enter your own amounts. The parts must add up to exactly the original total. Profit and items are split in the same proportion, so the dashboard and finance graphs stay accurate. (Stock isn't affected.)
           </div>
-          <div style={{ background: "#F4F7F4", borderRadius: 8, padding: "8px 12px", marginBottom: 10 }}>
+          <div style={{ background: "var(--surface-2, #F4F7F4)", borderRadius: 8, padding: "8px 12px", marginBottom: 10 }}>
             <div style={{ fontSize: 11.5, fontWeight: 700, color: "#465", marginBottom: 6 }}>Split over a date range</div>
             <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
               <label style={{ fontSize: 12, color: "var(--text-mid, #6B7E74)" }}>From <input type="date" className="input" style={{ width: "auto", marginLeft: 4 }} max={splitting.rangeTo || todayStr()} value={splitting.rangeFrom} onChange={(e) => setRangeFrom(e.target.value)} /></label>
@@ -4497,7 +4497,7 @@ function Alerts({ items, goInventory, cats = CATEGORIES }) {
                     <td style={{ fontWeight: 600 }}><span style={{ marginRight: 6 }}>{i.icon || "📦"}</span>{i.name}</td>
                     <td style={{ color: "#677" }}>{i.category}</td>
                     <td style={{ textAlign: "right", fontWeight: 800, color: i.stock <= 0 ? "#C44536" : "#B0762A" }}>{i.stock} {i.unit}</td>
-                    <td style={{ textAlign: "right", color: "#789" }}>{i.lowAt}</td>
+                    <td style={{ textAlign: "right", color: "var(--text-mid, #789)" }}>{i.lowAt}</td>
                   </tr>
                 ))}
               </tbody>
@@ -5364,7 +5364,7 @@ function Stats({ sales, expenses, items, customers = [], appointments = [] }) {
             <section style={S.panel}><Empty text="No capital / setup spending recorded in this period." /></section>
           ) : (
             <>
-              <div style={{ fontSize: 12.5, color: "#3A5547", marginBottom: 8 }}>
+              <div style={{ fontSize: 12.5, color: "var(--panelhead, #3A5547)", marginBottom: 8 }}>
                 One-time setup / capital of <b>{formatINR(expSum)}</b> across {pExp.length} {pExp.length === 1 ? "entry" : "entries"} — investment, not an operating cost, so it never reduces trading profit.
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16 }}>
@@ -5626,7 +5626,7 @@ function Udhari({ sales, setSales, notify, log }) {
                       const nLines = (b.lines || []).length;
                       return (
                         <Fragment key={b.id}>
-                          <tr onClick={() => toggleBill(b.id)} style={{ background: "#FAFBF8", cursor: "pointer" }}>
+                          <tr onClick={() => toggleBill(b.id)} style={{ background: "var(--surface-2, #FAFBF8)", cursor: "pointer" }}>
                             <td></td>
                             <td colSpan={3} style={{ fontSize: 12.5, color: "#566" }}>
                               <span style={{ color: "var(--text-mid, #8A9C90)", marginRight: 4 }}>{billOpen ? "▾" : "▸"}</span>
@@ -5638,10 +5638,10 @@ function Udhari({ sales, setSales, notify, log }) {
                             </td>
                           </tr>
                           {billOpen && (
-                            <tr style={{ background: "#FAFBF8" }}>
+                            <tr style={{ background: "var(--surface-2, #FAFBF8)" }}>
                               <td></td>
                               <td colSpan={5} style={{ paddingTop: 0 }}>
-                                <div style={{ background: "#fff", border: "1px solid #EEF3EE", borderRadius: 8, padding: "8px 12px" }}>
+                                <div style={{ background: "var(--surface-2, #fff)", border: "1px solid var(--border, #EEF3EE)", borderRadius: 8, padding: "8px 12px" }}>
                                   {nLines === 0 ? (
                                     <div style={{ fontSize: 12.5, color: "var(--text-mid, #8A9C90)" }}>No line items on this bill.</div>
                                   ) : (b.lines).map((l, i) => (
@@ -5917,7 +5917,7 @@ function VendorBills({ bills, setBills, setDailyBills, online, notify, log }) {
           {editId && !file && (() => { const cur = bills.find((b) => b.id === editId); return cur?.fileURL ? <div style={{ fontSize: 11.5, color: "var(--text-mid, #6B7E74)", marginTop: -6, marginBottom: 6 }}>Current proof: <a href={cur.fileURL} target="_blank" rel="noopener noreferrer">{cur.fileName || "view"}</a> — choose a file to replace it.</div> : null; })()}
           <div style={{ fontSize: 11, color: "var(--text-mid, #8A9C90)", marginBottom: 10 }}>JPG/PNG/PDF/DOC/XLS… up to 10 MB. Stored securely in the cloud.</div>
           {err && (
-            <div style={{ fontSize: 12, color: "#C44536", background: "#FBEDEB", border: "1px solid #E2B6B0", borderRadius: 8, padding: "8px 10px", marginBottom: 10, lineHeight: 1.5 }}>
+            <div style={{ fontSize: 12, color: "#C44536", background: "var(--tint-danger, #FBEDEB)", border: "1px solid var(--tint-danger-border, #E2B6B0)", borderRadius: 8, padding: "8px 10px", marginBottom: 10, lineHeight: 1.5 }}>
               {err}
               {file && <div style={{ marginTop: 6 }}><button className="btn small ghost" disabled={busy} onClick={() => { setFile(null); if (fileRef.current) fileRef.current.value = ""; setErr(""); notify("Proof removed — you can save the bill without it for now."); }}>Save without proof instead</button></div>}
             </div>
@@ -6327,14 +6327,14 @@ function StoreConfig({ config, setConfig, notify, log, user, role }) {
                 style={{
                   display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 12,
                   border: active ? `2px solid ${t.swatch[1]}` : "1.5px solid #DDE8DE",
-                  background: "#fff", cursor: "pointer", fontFamily: "inherit", textAlign: "left",
+                  background: "var(--surface, #fff)", cursor: "pointer", fontFamily: "inherit", textAlign: "left",
                 }}
               >
                 <span style={{ display: "flex", borderRadius: 8, overflow: "hidden", flexShrink: 0, border: "1px solid rgba(0,0,0,.1)", boxShadow: "0 1px 3px rgba(0,0,0,.12)" }}>
                   <span style={{ width: 22, height: 30, background: t.swatch[0] }} />
                   <span style={{ width: 14, height: 30, background: t.swatch[1] }} />
                 </span>
-                <span style={{ fontSize: 13.5, fontWeight: active ? 800 : 600, color: "#25342C" }}>{t.label}</span>
+                <span style={{ fontSize: 13.5, fontWeight: active ? 800 : 600, color: "var(--text-hi, #25342C)" }}>{t.label}</span>
                 {active && <span style={{ marginLeft: "auto", fontSize: 16, fontWeight: 900, color: t.swatch[1] }}>✓</span>}
               </button>
             );
@@ -6464,7 +6464,7 @@ function LoyaltyConfig({ config, setConfig, notify, log }) {
             <Field label="Minimum points to redeem"><input className="input" inputMode="numeric" value={draft.minRedeemPoints} onChange={(e) => set("minRedeemPoints", e.target.value)} /></Field>
             <Field label="Most a bill can be paid with points (%)"><input className="input" inputMode="decimal" value={draft.maxRedeemPctOfBill} onChange={(e) => set("maxRedeemPctOfBill", e.target.value)} /></Field>
           </div>
-          <div style={{ background: "#F4FAF6", border: "1px solid #CFE3D7", borderRadius: 8, padding: "8px 10px", fontSize: 12.5, color: "var(--brand)", marginBottom: 12 }}>
+          <div style={{ background: "var(--surface-2, #F4FAF6)", border: "1px solid var(--tint-info-border, #CFE3D7)", borderRadius: 8, padding: "8px 10px", fontSize: 12.5, color: "var(--brand)", marginBottom: 12 }}>
             That's <b>{pctBack ? (pctBack / 100).toFixed(2) : "0"}%</b> back. A ₹2,000 bill earns{" "}
             <b>{Math.floor((2000 / 100) * n(draft.earnRate) || 0)} points</b> — worth <b>{INR(example)}</b> off a future visit.
           </div>
@@ -6621,7 +6621,7 @@ function Appointments({
       <section style={{ ...S.panel, padding: 0, overflowX: "auto" }}>
         <div style={{ display: "grid", gridTemplateColumns: `56px repeat(${columns.length}, minmax(140px, 1fr))`, minWidth: 56 + columns.length * 140 }}>
           {/* header row */}
-          <div style={{ position: "sticky", left: 0, background: "#fff", zIndex: 2, borderBottom: "1px solid #E2EAE3" }} />
+          <div style={{ position: "sticky", left: 0, background: "var(--surface, #fff)", zIndex: 2, borderBottom: "1px solid var(--border, #E2EAE3)" }} />
           {columns.map((s) => (
             <div key={s.id} style={{ padding: "8px 6px", textAlign: "center", borderBottom: "1px solid #E2EAE3", borderLeft: "1px solid #EEF3EE" }}>
               <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
@@ -6634,7 +6634,7 @@ function Appointments({
           {/* Time gutter. `sticky` (not `relative`) so the times stay visible while the staff
               columns scroll sideways on a phone — and sticky is itself a non-static position,
               so it still anchors the absolutely-placed labels below. */}
-          <div style={{ position: "sticky", left: 0, background: "#fff", zIndex: 2, height: gridHeight }}>
+          <div style={{ position: "sticky", left: 0, background: "var(--surface, #fff)", zIndex: 2, height: gridHeight }}>
             {slots.map((t) => (
               <div
                 key={t}
@@ -6822,7 +6822,7 @@ function AppointmentModal({
       </Field>
 
       {clash && (
-        <div style={{ background: "#FFF4E5", border: "1px solid #F0D0A0", borderRadius: 8, padding: "7px 10px", fontSize: 12.5, color: "#8A5A14", marginBottom: 8 }}>
+        <div style={{ background: "var(--tint-warm, #FFF4E5)", border: "1px solid var(--tint-warm-border, #F0D0A0)", borderRadius: 8, padding: "7px 10px", fontSize: 12.5, color: "#8A5A14", marginBottom: 8 }}>
           ⚠ {staffName(staff, draft.staffId)} is already busy {toClock(clash.startMin)}–{toClock(endMin(clash))}.
         </div>
       )}
@@ -7124,7 +7124,7 @@ function MessageTemplates({ templates, setTemplates, store, notify, log, onClose
                   className="input" rows={3} style={{ resize: "vertical", width: "100%", boxSizing: "border-box" }}
                   value={t.body} onChange={(e) => set(t.id, "body", e.target.value)}
                 />
-                <div style={{ fontSize: 11.5, color: "var(--brand)", background: "#F4FAF6", borderRadius: 6, padding: "5px 8px", marginTop: 3 }}>
+                <div style={{ fontSize: 11.5, color: "var(--brand)", background: "var(--surface-2, #F4FAF6)", borderRadius: 6, padding: "5px 8px", marginTop: 3 }}>
                   {preview(t.body)}
                 </div>
               </div>
@@ -7983,7 +7983,7 @@ function StaffPayouts({ staff, sales, store }) {
                     </tr>
                     {open === p.staffId && (
                       <tr>
-                        <td colSpan={5} style={{ background: "#F7FAF7", padding: 0 }}>
+                        <td colSpan={5} style={{ background: "var(--surface-2, #F7FAF7)", padding: 0 }}>
                           {/* Line by line, because "why is my commission this number" is the
                               question this screen exists to answer. */}
                           <table className="tbl" style={{ width: "100%" }}>
@@ -8609,7 +8609,7 @@ function Users({ user, notify, log }) {
       </div>
 
       {adding && (
-        <div style={{ border: "1px solid #E2EAE3", borderRadius: 10, padding: 12, marginBottom: 14, background: "#F8FBF9" }}>
+        <div style={{ border: "1px solid #E2EAE3", borderRadius: 10, padding: 12, marginBottom: 14, background: "var(--surface-2, #F8FBF9)" }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <Field label="Email"><input className="input" type="email" autoComplete="off" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} /></Field>
             <Field label="Name (optional)"><input className="input" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} /></Field>
@@ -8913,10 +8913,10 @@ const S = {
   panel: { background: "var(--surface, #fff)", borderRadius: 14, padding: 16, border: "1px solid var(--border, #E2EAE3)" },
   panelHead: { fontWeight: 800, fontSize: 13.5, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--panelhead, #3A5547)", fontFamily: "var(--font-display, inherit)", display: "flex", alignItems: "center", marginBottom: 10 },
   row: { display: "flex", justifyContent: "space-between", padding: "8px 2px", borderBottom: "1px dashed var(--row-line, #E5ECE6)", fontSize: 13.5 },
-  receipt: { background: "#FFFDF6", borderRadius: 4, padding: "18px 16px", border: "1px solid #E8E2CF", boxShadow: "0 2px 10px rgba(40,60,40,.07)", alignSelf: "start", backgroundImage: "repeating-linear-gradient(transparent, transparent 27px, rgba(180,170,140,.12) 28px)" },
-  receiptHead: { textAlign: "center", fontWeight: 800, letterSpacing: "0.25em", fontSize: 12, color: "#6B6347", borderBottom: "2px dashed #D8D0B8", paddingBottom: 10, marginBottom: 8 },
-  rcptLine: { display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: "1px dotted #E0D9C4" },
-  rcptTotal: { display: "flex", justifyContent: "space-between", fontWeight: 800, fontSize: 18, paddingTop: 12, marginTop: 6, borderTop: "2px dashed #C9BF9F" },
+  receipt: { background: "var(--receipt-bg, #FFFDF6)", borderRadius: 4, padding: "18px 16px", border: "1px solid var(--receipt-border, #E8E2CF)", boxShadow: "0 2px 10px rgba(40,60,40,.07)", alignSelf: "start", backgroundImage: "var(--receipt-lines, repeating-linear-gradient(transparent, transparent 27px, rgba(180,170,140,.12) 28px))" },
+  receiptHead: { textAlign: "center", fontWeight: 800, letterSpacing: "0.25em", fontSize: 12, color: "var(--receipthead-ink, #6B6347)", borderBottom: "2px dashed var(--receipt-rule, #D8D0B8)", paddingBottom: 10, marginBottom: 8 },
+  rcptLine: { display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: "1px dotted var(--receipt-rule, #E0D9C4)" },
+  rcptTotal: { display: "flex", justifyContent: "space-between", fontWeight: 800, fontSize: 18, paddingTop: 12, marginTop: 6, borderTop: "2px dashed var(--receipt-rule, #C9BF9F)" },
   badge: { background: "#C44536", color: "#fff", fontSize: 10.5, fontWeight: 800, borderRadius: 9, padding: "1px 7px", marginLeft: 8 },
   toast: { position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "var(--ink)", color: "#fff", padding: "10px 20px", borderRadius: 10, fontSize: 13.5, boxShadow: "0 6px 20px rgba(0,0,0,.25)", zIndex: 60 },
   // Offline write-block popup: a loud, unmissable red overlay above everything else.
@@ -8987,6 +8987,15 @@ const CSS = `
     --tbl-line:rgba(255,255,255,.08); --tbl-row-hover:rgba(255,255,255,.05);
     --blocked-fill:repeating-linear-gradient(45deg, rgba(255,255,255,.04), rgba(255,255,255,.04) 5px, rgba(255,255,255,.10) 5px, rgba(255,255,255,.10) 10px);
     --blocked-ink:var(--text-mid);
+    /* Secondary surfaces: inner cards/rows/boxes that sit ON a panel, and the tinted callouts.
+       Every text-bearing surface must go dark here — a light one traps the now-light body text. */
+    --surface-2:rgba(255,255,255,.05);
+    --tint-warm:rgba(224,177,94,.15); --tint-warm-border:rgba(224,177,94,.34);
+    --tint-danger:rgba(228,112,122,.15); --tint-danger-border:rgba(228,112,122,.34);
+    --tint-info:rgba(255,255,255,.05); --tint-info-border:var(--glass-border);
+    /* The POS "current bill" panel (S.receipt) — glass, not paper, in Advanced. */
+    --receipt-bg:rgba(255,255,255,.05); --receipt-border:var(--glass-border);
+    --receipt-lines:none; --receipthead-ink:#CDBF9A; --receipt-rule:rgba(255,255,255,.16);
   }
   .navbtn { display:flex; align-items:center; gap:6px; width:100%; text-align:left; background:none; border:none; color:var(--nav-text); padding:10px 12px; border-radius:9px; font-size:13.5px; font-weight:600; cursor:pointer; position:relative; }
   .navbtn:hover { background:var(--nav-hover); color:#fff; }
