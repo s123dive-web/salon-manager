@@ -1321,10 +1321,10 @@ function StoreManager({ user, role, onLogout }) {
           <div style={{ marginTop: "auto", padding: "8px 8px 4px" }}>
             <div style={{ fontSize: 10.5, color: "#6E8A7C", textTransform: "uppercase", letterSpacing: ".06em", padding: "0 6px 4px" }}>Backup</div>
             <div style={{ display: "flex", gap: 6 }}>
-              <button className="navbtn" style={{ border: "1px solid #2A5A3E", justifyContent: "center" }} onClick={() => exportData("json")}>⬇ JSON</button>
-              <button className="navbtn" style={{ border: "1px solid #2A5A3E", justifyContent: "center" }} onClick={() => exportData("xlsx")}>⬇ XLSX</button>
+              <button className="navbtn util" onClick={() => exportData("json")}>⬇ JSON</button>
+              <button className="navbtn util" onClick={() => exportData("xlsx")}>⬇ XLSX</button>
             </div>
-            <label className="navbtn" style={{ border: "1px solid #2A5A3E", justifyContent: "center", cursor: "pointer", marginTop: 6 }}>
+            <label className="navbtn util" style={{ cursor: "pointer", marginTop: 6 }}>
               ⬆ Restore (JSON / XLSX)
               <input type="file" accept=".json,.xlsx,.xls,application/json" onChange={importData} style={{ display: "none" }} />
             </label>
@@ -1333,8 +1333,8 @@ function StoreManager({ user, role, onLogout }) {
         {/* Pushes the footer down when the Backup block above (which normally carries the
             margin-top:auto) is hidden for this role. */}
         <div style={{ display: "flex", gap: 6, padding: "8px 8px 4px", marginTop: can(role, "backup.use") ? 0 : "auto" }}>
-          <button className="navbtn" style={{ border: "1px solid #2A5A3E", justifyContent: "center" }} onClick={resetMyPassword}>🔑 Reset</button>
-          <button className="navbtn" style={{ border: "1px solid #2A5A3E", justifyContent: "center" }} onClick={onLogout}>⎋ Logout</button>
+          <button className="navbtn util" onClick={resetMyPassword}>🔑 Reset</button>
+          <button className="navbtn util" onClick={onLogout}>⎋ Logout</button>
         </div>
         <div style={{ fontSize: 11, color: "#6E8A7C", padding: "6px 14px 8px" }}>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 5, marginBottom: 3 }}>
@@ -8684,7 +8684,7 @@ function Modal({ title, children, onClose }) {
 // ---------- styles ----------
 const S = {
   app: { display: "flex", minHeight: "100vh", background: "#EFF3EE", fontFamily: "'Segoe UI', system-ui, -apple-system, sans-serif", color: "#1E2421" },
-  nav: { width: 210, background: "#10331F", color: "#E6F0E9", display: "flex", flexDirection: "column", gap: 4, padding: "16px 10px", position: "sticky", top: 0, height: "100vh", boxSizing: "border-box" },
+  nav: { width: 210, background: "#10331F", color: "#E6F0E9", display: "flex", flexDirection: "column", gap: 4, padding: "16px 10px", position: "sticky", top: 0, height: "100vh", boxSizing: "border-box", overflowY: "auto", overflowX: "hidden" },
   logo: { display: "flex", gap: 10, alignItems: "center", padding: "4px 8px 18px" },
   logoMark: { width: 38, height: 38, borderRadius: 10, background: "#E8A33D", color: "#10331F", display: "grid", placeItems: "center", fontWeight: 800, fontSize: 17 },
   main: { flex: 1, padding: "26px 30px", maxWidth: 1280, margin: "0 auto", width: "100%", boxSizing: "border-box" },
@@ -8709,6 +8709,10 @@ const CSS = `
   .navbtn.active { background:#1B5E43; color:#fff; }
   .navbtn.sub { padding-left:26px; font-size:13px; color:#A8C2B4; }
   .navbtn.sub::before { content:""; position:absolute; left:14px; top:9px; bottom:9px; width:2px; background:#2A5A3E; border-radius:2px; }
+  /* Bottom utility actions (Backup / Restore / Reset / Logout): a filled, bordered variant with
+     brighter text, so they read as real buttons instead of ghosted/disabled links. */
+  .navbtn.util { background:#173D28; color:#E9F2EC; border:1px solid #3A6B4D; justify-content:center; font-weight:700; }
+  .navbtn.util:hover { background:#1F5237; color:#fff; border-color:#4E8A66; }
   .input { width:100%; box-sizing:border-box; padding:10px 12px; border:1.5px solid #D5E0D6; border-radius:9px; font-size:14px; background:#fff; outline:none; font-family:inherit; }
   .input:focus { border-color:#1B5E43; box-shadow:0 0 0 3px rgba(27,94,67,.12); }
   .btn { border:none; border-radius:9px; padding:9px 16px; font-size:13.5px; font-weight:700; cursor:pointer; background:#E4ECE5; color:#23402F; font-family:inherit; }
