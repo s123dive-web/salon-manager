@@ -16,7 +16,7 @@ import {
   subscribeUsers, subscribeOwnUser, writeUser, updateUser, readUsersOnce,
 } from "./lib/sync.js";
 import { parseFile, parseRawText } from "./lib/parse.js";
-import { itemBarcodes, findItemByBarcode, findBarcodeClash, cleanBarcodeList, parseBarcodeText, withBarcodeSep, looksLikeBarcode } from "./lib/barcodes.js";
+import { itemBarcodes, findItemByBarcode, findBarcodeClash, parseBarcodeText, withBarcodeSep, looksLikeBarcode } from "./lib/barcodes.js";
 import { exportJson, exportXlsx, importXlsx } from "./lib/backup.js";
 import { can, ROLE_LABELS, ROLE_DESCRIPTIONS, ROLES, resolveRole, isBootstrap, validateUserChange } from "./lib/roles.js";
 import {
@@ -392,10 +392,6 @@ const isAutoIcon = (icon, category) => {
 };
 
 // Keyword → category guesses for the Add-item form. Ordered: more specific entries first so the
-// right one wins (e.g. "ice cream" before generic terms, "dairy milk" before "milk", "chilli
-// powder" before "chilli"). Single-word keys match on word boundaries; multi-word / punctuated
-// keys match as substrings.
-// Keyword → category guesses for the Add-item form. Ordered: more specific entries first so the
 // right one wins ("nail polish remover" before "polish", "hair colour" before "colour"). Single-word
 // keys match on word boundaries; multi-word / punctuated keys match as substrings.
 const CATEGORY_KEYWORDS = [
@@ -428,8 +424,6 @@ function guessCategory(name, items = []) {
   return null;
 }
 
-// Catalog tuned for a Pashan–Baner (Pune) society convenience store:
-// top-up shoppers, kids' favourites, always-moving chilled stock.
 // The opening product shelf: retail lines a salon actually resells, plus the backbar stock it
 // consumes while working. Built in src/lib/seed.js so the data stays pure and testable.
 // Every item starts at 0 stock — the salon counts its real opening stock in.
@@ -1314,7 +1308,7 @@ function StoreManager({ user, role, onLogout }) {
     logs: () => guard("logs.view", <Logs logs={logs} setLogs={writers.logs} notify={notify} />),
     changelog: () => <Changelog />,
     settings: () => guard("settings.manage", <StoreConfig config={config} setConfig={writers.config} notify={notify} log={addLog} user={user} role={role} />),
-    admin: () => guard("settings.manage", <Admin items={items} setItems={writers.items} setSales={writers.sales} setExpenses={writers.expenses} setLogs={writers.logs} sales={sales} customers={customers} setCustomers={writers.customers} customerPackages={customerPackages} setCustomerPackages={writers.customerPackages} config={config} user={user} notify={notify} log={addLog} />),
+    admin: () => guard("settings.manage", <Admin setItems={writers.items} setSales={writers.sales} setExpenses={writers.expenses} setLogs={writers.logs} sales={sales} customers={customers} setCustomers={writers.customers} customerPackages={customerPackages} setCustomerPackages={writers.customerPackages} config={config} user={user} notify={notify} log={addLog} />),
   };
   const view = (VIEWS[tab] || VIEWS.dashboard)();
 
@@ -2741,32 +2735,6 @@ const blankItem = { name: "", code: "", barcodes: [], category: CATEGORIES[0], u
 
 // Normalised item name for duplicate detection (trim, lowercase, collapse inner spaces).
 const normName = (s) => String(s || "").trim().toLowerCase().replace(/\s+/g, " ");
-
-// Merge several same-name items into one, preserving stock: sum quantities, combine all
-// batches, and keep the most complete pricing/category fields. Keeps the oldest item's id.
-function mergeItemGroup(group) {
-  const sorted = [...group].sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")));
-  const primary = sorted[0];
-  const pick = (key) => sorted.map((x) => x[key]).find((v) => v != null && v !== "" && v !== 0);
-  // Union every merged item's barcodes so none are lost; the first becomes the primary `code`.
-  const allBc = cleanBarcodeList(sorted.flatMap((x) => itemBarcodes(x)));
-  return {
-    ...primary,
-    name: (primary.name || "").trim(),
-    code: allBc[0] || "",
-    barcodes: allBc.slice(1),
-    category: primary.category || pick("category") || "Other",
-    unit: primary.unit || pick("unit") || "pc",
-    icon: primary.icon || iconFor(primary.category),
-    buyPrice: pick("buyPrice") || 0,
-    sellPrice: pick("sellPrice") || primary.sellPrice || 0,
-    mrp: pick("mrp") || pick("sellPrice") || 0,
-    lowAt: Math.max(0, ...sorted.map((x) => +x.lowAt || 0)),
-    stock: sorted.reduce((a, x) => a + (+x.stock || 0), 0),
-    batches: sorted.flatMap((x) => (Array.isArray(x.batches) ? x.batches : [])),
-    updatedAt: todayStr(),
-  };
-}
 
 function Inventory({ items, setItems, notify, log, cats = CATEGORIES, onAddCategory }) {
   const [q, setQ] = useState("");
@@ -8503,30 +8471,12 @@ function Users({ user, notify, log }) {
 // ---------- Admin (password-gated bulk / destructive operations) ----------
 // Every action requires: confirm → confirm again → re-enter the account password
 // (verified against Firebase Auth). Only on a successful re-auth does the action run.
-function Admin({ items, setItems, setSales, setExpenses, setLogs, sales, customers, setCustomers, customerPackages, setCustomerPackages, config, user, notify, log }) {
+function Admin({ setItems, setSales, setExpenses, setLogs, sales, customers, setCustomers, customerPackages, setCustomerPackages, config, user, notify, log }) {
   const [pending, setPending] = useState(null); // the chosen operation
   const [step, setStep] = useState(1); // 1 = first confirm, 2 = password
   const [pwd, setPwd] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
-
-  const dupeExtras = useMemo(() => {
-    const seen = new Set();
-    let extra = 0;
-    for (const i of items) { const k = normName(i.name); seen.has(k) ? extra++ : seen.add(k); }
-    return extra;
-  }, [items]);
-
-  const zeroStockCount = useMemo(() => items.filter((i) => (+i.stock || 0) <= 0).length, [items]);
-  const zeroPriceCount = useMemo(() => items.filter((i) => (+i.sellPrice || 0) <= 0).length, [items]);
-
-  // Items now sitting in "Other" (or with no category) whose NAME confidently maps to a real
-  // category. guessCategory is called without the items list so only the keyword map is used —
-  // no fuzzy shared-token guessing — keeping bulk re-categorization high-precision. Anything the
-  // keywords can't place stays in Other, so nothing is ever mis-filed.
-  const isOtherCat = (i) => { const c = (i.category || "").trim().toLowerCase(); return c === "" || c === "other"; };
-  const guessForOther = (i) => { const g = guessCategory(i.name); return g && g !== "Other" ? g : null; };
-  const otherFixable = useMemo(() => items.filter((i) => isOtherCat(i) && guessForOther(i)).length, [items]);
 
   // How far the denormalized fields have drifted from the bills. Normally 0: the shell
   // reconciles them on every change. A non-zero count means data arrived from outside the app
@@ -8562,47 +8512,6 @@ function Admin({ items, setItems, setSales, setExpenses, setLogs, sales, custome
       desc: "Set stock to 0 and clear every batch for all items. Names and prices are kept.",
       apply: () => setItems((l) => l.map((i) => ({ ...i, stock: 0, batches: [], updatedAt: todayStr() }))),
       logMsg: "Reset all stock to 0", toast: "All stock set to 0" },
-    { key: "zeroBuy", label: "Zero all buy prices", group: "Inventory",
-      desc: "Set the buy (cost) price to 0 for every item.",
-      apply: () => setItems((l) => l.map((i) => ({ ...i, buyPrice: 0, updatedAt: todayStr() }))),
-      logMsg: "Reset all buy prices to 0", toast: "All buy prices set to 0" },
-    { key: "zeroSell", label: "Zero all sell prices", group: "Inventory",
-      desc: "Set the sell price and MRP to 0 for every item.",
-      apply: () => setItems((l) => l.map((i) => ({ ...i, sellPrice: 0, mrp: 0, updatedAt: todayStr() }))),
-      logMsg: "Reset all sell prices to 0", toast: "All sell prices set to 0" },
-    { key: "zeroPrices", label: "Zero all prices (buy + sell)", group: "Inventory",
-      desc: "Set buy price, sell price and MRP to 0 for every item.",
-      apply: () => setItems((l) => l.map((i) => ({ ...i, buyPrice: 0, sellPrice: 0, mrp: 0, updatedAt: todayStr() }))),
-      logMsg: "Reset all prices to 0", toast: "All prices set to 0" },
-    { key: "dedupe", label: "Merge duplicate items" + (dupeExtras ? ` (${dupeExtras})` : ""), group: "Inventory",
-      desc: "Combine items that share the same name into one entry — stock and batches are summed, nothing is lost.",
-      disabled: dupeExtras === 0,
-      apply: () => setItems((l) => {
-        const g = new Map();
-        for (const i of l) { const k = normName(i.name); if (!g.has(k)) g.set(k, []); g.get(k).push(i); }
-        return [...g.values()].map((x) => (x.length === 1 ? x[0] : mergeItemGroup(x)));
-      }),
-      logMsg: "Merged duplicate items", toast: "Duplicates merged" },
-    { key: "autoCat", label: "Auto-categorize “Other” items" + (otherFixable ? ` (${otherFixable})` : ""), group: "Inventory",
-      desc: "Move items now in “Other” into the category their name matches (e.g. “Bisleri Water” → Cold Drinks & Water). Only confident name matches are moved; anything unclear stays in Other. Auto icons update; custom ones are kept.",
-      disabled: otherFixable === 0,
-      apply: () => setItems((l) => l.map((i) => {
-        if (!isOtherCat(i)) return i;
-        const g = guessForOther(i);
-        if (!g) return i;
-        return { ...i, category: g, icon: isAutoIcon(i.icon, i.category) ? iconFor(g) : i.icon, updatedAt: todayStr() };
-      })),
-      logMsg: `Auto-categorized ${otherFixable} item(s) from Other`, toast: `${otherFixable} item(s) re-categorized` },
-    { key: "delZeroStock", label: "Delete 0-stock items" + (zeroStockCount ? ` (${zeroStockCount})` : ""), group: "Danger zone", danger: true,
-      desc: "Permanently remove every item whose stock is 0. Items that still have stock are kept.",
-      disabled: zeroStockCount === 0,
-      apply: () => setItems((l) => l.filter((i) => (+i.stock || 0) > 0)),
-      logMsg: "Deleted 0-stock items", toast: "0-stock items deleted" },
-    { key: "delZeroPrice", label: "Delete 0-price items" + (zeroPriceCount ? ` (${zeroPriceCount})` : ""), group: "Danger zone", danger: true,
-      desc: "Permanently remove every item whose sell price is 0. Items with a sell price are kept.",
-      disabled: zeroPriceCount === 0,
-      apply: () => setItems((l) => l.filter((i) => (+i.sellPrice || 0) > 0)),
-      logMsg: "Deleted 0-price items", toast: "0-price items deleted" },
     { key: "delItems", label: "Delete ALL inventory items", group: "Danger zone", danger: true,
       desc: "Permanently remove every item from inventory. Sales history is kept.",
       apply: () => setItems([]), logMsg: "Deleted all inventory items", toast: "All items deleted" },
