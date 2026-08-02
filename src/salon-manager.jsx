@@ -458,16 +458,17 @@ const STORE = {
   upiId: "",      // UPI VPA (e.g. salon@okhdfcbank). Set => bills show an amount-encoded QR; "" => static image
   upiName: "",    // payee name shown in the customer's UPI app; "" => fall back to the salon name
   theme: "emerald", // colour theme key (see THEMES); drives the sidebar + accent palette
-  iconStyle: "advanced", // "advanced" (glass service icons) | "basic" (flat) — see ICON_STYLES
+  iconStyle: "advanced", // "advanced" (dark glass whole-app skin) | "basic" (classic flat) — see ICON_STYLES
 };
 
-// How the service icons are dressed. This is the app's [data-theme] axis: it sits on the .app
-// root and is what the icon stylesheet branches on (see SERVICE_ICON_CSS). It is deliberately
-// SEPARATE from the colour theme above — a salon picks its colour, then decides whether the
-// counter tablet gets the gilded glass chips or the flat ones that read faster in daylight.
+// The app's APPEARANCE — the [data-theme] axis on the .app root, which the whole stylesheet
+// branches on: in "advanced" a dark glass skin (a lit backdrop, frosted panels, gilded icons); in
+// "basic" the original bright, flat look. Kept SEPARATE from the colour theme above — a salon picks
+// its colour, then decides whether every device shows the glass skin or the flat one that reads
+// fastest in daylight. (The config key stays `iconStyle` for backward-compat with saved settings.)
 const ICON_STYLES = {
-  advanced: { label: "Glass", hint: "gilded chips with a soft highlight" },
-  basic: { label: "Flat", hint: "plain chips, single-colour lines" },
+  advanced: { label: "Advanced", hint: "dark glass — a lit backdrop, frosted panels and gilded icons" },
+  basic: { label: "Basic", hint: "the classic bright, flat look — fastest to read in daylight" },
 };
 const ICON_STYLE_KEYS = Object.keys(ICON_STYLES);
 
@@ -684,7 +685,7 @@ function Login() {
           <img src={loginLogo} alt={store.name} style={{ width: 52, height: 52, borderRadius: 12, objectFit: "contain", flexShrink: 0 }} />
           <div>
             <div style={{ fontWeight: 800, fontSize: 18, letterSpacing: "-0.02em" }}>{store.name}</div>
-            <div style={{ fontSize: 11.5, color: "#8A9C90" }}>{store.address}</div>
+            <div style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)" }}>{store.address}</div>
           </div>
         </div>
         <h2 style={{ fontSize: 16, margin: "18px 0 12px" }}>Sign in</h2>
@@ -701,7 +702,7 @@ function Login() {
         {info && <div style={{ color: "var(--brand)", fontSize: 13, marginBottom: 8 }}>{info}</div>}
         <button className="btn primary big" type="submit" style={{ width: "100%" }} disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button>
         <button type="button" onClick={reset} style={{ display: "block", background: "none", border: "none", color: "var(--brand)", fontSize: 12, marginTop: 10, cursor: "pointer", padding: 0 }}>Forgot password? Email me a reset link</button>
-        <div style={{ fontSize: 11, color: "#8A9C90", marginTop: 12, lineHeight: 1.5 }}>
+        <div style={{ fontSize: 11, color: "var(--text-mid, #8A9C90)", marginTop: 12, lineHeight: 1.5 }}>
           Sign in with your shop account. Your data syncs live across every device that signs in.
         </div>
       </form>
@@ -1513,7 +1514,7 @@ function TodayAppointments({ appointments, customers, staff, services, date, goA
   return (
     <section style={S.panel}>
       <div style={{ ...S.panelHead, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <span>{date === todayStr() ? "Today's appointments" : `Appointments · ${date}`}{day.length > 0 && <span style={{ fontWeight: 400, color: "#8A9C90" }}> · {day.length}</span>}</span>
+        <span>{date === todayStr() ? "Today's appointments" : `Appointments · ${date}`}{day.length > 0 && <span style={{ fontWeight: 400, color: "var(--text-mid, #8A9C90)" }}> · {day.length}</span>}</span>
         {goAppointments && <button className="btn ghost" style={{ fontSize: 12 }} onClick={goAppointments}>Open diary</button>}
       </div>
       {day.length === 0 ? (
@@ -1535,8 +1536,8 @@ function TodayAppointments({ appointments, customers, staff, services, date, goA
                     <span style={{ fontWeight: 600, textDecoration: a.status === "cancelled" ? "line-through" : "none" }}>
                       {cust?.name || "Walk-in"}
                     </span>
-                    <span style={{ color: "#8A9C90", fontSize: 12 }}> · {staffName(staff, a.staffId)}</span>
-                    {names.length > 0 && <div style={{ fontSize: 11.5, color: "#8A9C90" }}>{names.join(", ")}</div>}
+                    <span style={{ color: "var(--text-mid, #8A9C90)", fontSize: 12 }}> · {staffName(staff, a.staffId)}</span>
+                    {names.length > 0 && <div style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)" }}>{names.join(", ")}</div>}
                   </span>
                 </span>
                 <span style={{ fontSize: 11, fontWeight: 700, color: APPT_STATUS_COLORS[a.status], whiteSpace: "nowrap" }}>
@@ -1668,7 +1669,7 @@ function Dashboard({ items, sales, lowStock, goBilling, appointments = [], custo
   return (
     <div>
       <Header title="Dashboard" sub={niceDate}>
-        <label style={{ fontSize: 12, color: "#6B7E74" }}>
+        <label style={{ fontSize: 12, color: "var(--text-mid, #6B7E74)" }}>
           View day{" "}
           <input type="date" className="input" style={{ width: "auto", marginLeft: 4 }} value={date} max={todayStr()} onChange={(e) => setDate(e.target.value)} />
         </label>
@@ -1703,7 +1704,7 @@ function Dashboard({ items, sales, lowStock, goBilling, appointments = [], custo
       </div>
 
       <div style={{ fontSize: 13, fontWeight: 800, color: "var(--ink)", letterSpacing: ".02em", margin: "22px 0 8px" }}>
-        Monthly overview <span style={{ fontWeight: 500, color: "#8A9C90" }}>(from May 2026)</span>
+        Monthly overview <span style={{ fontWeight: 500, color: "var(--text-mid, #8A9C90)" }}>(from May 2026)</span>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
         <ChartCard title="Monthly revenue" height={220}>
@@ -1747,11 +1748,11 @@ function Dashboard({ items, sales, lowStock, goBilling, appointments = [], custo
         {period === "custom" && (
           <>
             <input type="date" className="input" style={{ width: "auto" }} value={customFrom} max={customTo || todayStr()} onChange={(e) => setCustomFrom(e.target.value)} />
-            <span style={{ color: "#8A9C90" }}>to</span>
+            <span style={{ color: "var(--text-mid, #8A9C90)" }}>to</span>
             <input type="date" className="input" style={{ width: "auto" }} value={customTo} max={todayStr()} onChange={(e) => setCustomTo(e.target.value)} />
           </>
         )}
-        {rangeLabel && <span style={{ fontSize: 12, color: "#8A9C90" }}>{rangeLabel}</span>}
+        {rangeLabel && <span style={{ fontSize: 12, color: "var(--text-mid, #8A9C90)" }}>{rangeLabel}</span>}
       </div>
 
       <div style={{ fontSize: 12, fontWeight: 700, color: "#4A5D52", margin: "10px 0 6px" }}>Day wise</div>
@@ -1789,7 +1790,7 @@ function Dashboard({ items, sales, lowStock, goBilling, appointments = [], custo
         </ChartCard>
       </div>
 
-      <div style={{ fontSize: 12, fontWeight: 700, color: "#4A5D52", margin: "18px 0 6px" }}>Week wise <span style={{ fontWeight: 500, color: "#8A9C90" }}>(week starting Mon)</span></div>
+      <div style={{ fontSize: 12, fontWeight: 700, color: "#4A5D52", margin: "18px 0 6px" }}>Week wise <span style={{ fontWeight: 500, color: "var(--text-mid, #8A9C90)" }}>(week starting Mon)</span></div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
         <ChartCard title="Week wise revenue" height={220}>
           <BarChart data={weeklySeries} margin={{ top: 16, right: 8, left: -8, bottom: 0 }}>
@@ -1933,7 +1934,7 @@ function CustomerPicker({ customers, value, onPick, onCreate, notify }) {
               </span>
             )}
           </div>
-          <div style={{ fontSize: 11.5, color: "#6B7E74" }}>
+          <div style={{ fontSize: 11.5, color: "var(--text-mid, #6B7E74)" }}>
             {formatPhone(picked.phone)}
             {picked.totalVisits ? ` · ${picked.totalVisits} visit${picked.totalVisits > 1 ? "s" : ""}` : " · first visit"}
             {picked.loyaltyPoints > 0 ? ` · ${picked.loyaltyPoints} pts` : ""}
@@ -1966,7 +1967,7 @@ function CustomerPicker({ customers, value, onPick, onCreate, notify }) {
               style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 10px", border: "none", background: "none", cursor: "pointer", borderBottom: "1px solid #F0F4F1" }}
             >
               <div style={{ fontWeight: 600, fontSize: 13 }}>{c.name || "(no name)"}</div>
-              <div style={{ fontSize: 11.5, color: "#6B7E74" }}>
+              <div style={{ fontSize: 11.5, color: "var(--text-mid, #6B7E74)" }}>
                 {formatPhone(c.phone)}
                 {c.totalVisits ? ` · ${c.totalVisits} visit${c.totalVisits > 1 ? "s" : ""} · ${INR(c.totalSpend || 0)}` : ""}
               </div>
@@ -1981,7 +1982,7 @@ function CustomerPicker({ customers, value, onPick, onCreate, notify }) {
             </button>
           )}
           {!results.length && !unknownNumber && (
-            <div style={{ padding: "9px 10px", fontSize: 12.5, color: "#8A9C90" }}>
+            <div style={{ padding: "9px 10px", fontSize: 12.5, color: "var(--text-mid, #8A9C90)" }}>
               {normalizePhone(q).length >= 4 && !isValidPhone(q) ? "Keep typing the full 10-digit number to add them…" : "No match."}
             </div>
           )}
@@ -2464,13 +2465,13 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
     <div>
       <Header title="Billing" sub={mode === "service" ? "Tap a service to add it to the bill" : "Tap a product to add it to the bill"}>
         {can(role, "billing.backdate") ? (
-          <label style={{ fontSize: 12, color: saleDate === todayStr() ? "#6B7E74" : "#C44536", fontWeight: 600 }}>
+          <label style={{ fontSize: 12, color: saleDate === todayStr() ? "var(--text-mid, #6B7E74)" : "#C44536", fontWeight: 600 }}>
             Bill date{" "}
             <input type="date" className="input" style={{ width: "auto", marginLeft: 4 }} value={saleDate} max={todayStr()} onChange={(e) => setSaleDate(e.target.value || todayStr())} />
           </label>
         ) : (
           // A worker bills today. Back-dating moves revenue between days and is an owner call.
-          <span style={{ fontSize: 12, color: "#6B7E74" }}>Bill date · {saleDate}</span>
+          <span style={{ fontSize: 12, color: "var(--text-mid, #6B7E74)" }}>Bill date · {saleDate}</span>
         )}
       </Header>
       <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 16 }}>
@@ -2517,7 +2518,7 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
                 <Empty text={services.length ? "No services match." : "No services on the menu yet."} />
               ) : serviceResults.map(([category, list]) => (
                 <div key={category} style={{ marginBottom: 12 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, fontWeight: 700, color: "#8A9C90", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 6 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, fontWeight: 700, color: "var(--text-mid, #8A9C90)", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 6 }}>
                     <ServiceIconChip icon={CATEGORY_FALLBACK[category] || "defaultService"} size={32} />
                     {category}
                   </div>
@@ -2631,7 +2632,7 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
               ))}
               {/* Optional additional discount on the whole bill (₹ off, or a % of the subtotal). */}
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, paddingTop: 10, borderTop: "1px dashed #E0D9C4" }}>
-                <span style={{ fontSize: 12, fontWeight: 700, color: "#6B7E74" }}>Additional discount</span>
+                <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-mid, #6B7E74)" }}>Additional discount</span>
                 <div style={{ display: "flex", gap: 4, marginLeft: "auto", alignItems: "center" }}>
                   {["₹", "%"].map((m) => (
                     <button key={m} className={"btn small " + (discMode === m ? "primary" : "ghost")} style={{ minWidth: 30 }} onClick={() => setDiscMode(m)} aria-label={m === "₹" ? "Discount in rupees" : "Discount in percent"}>{m}</button>
@@ -2641,7 +2642,7 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
               </div>
               {discountAmt > 0 && (
                 <>
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: "#6B7E74", marginTop: 8 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: "var(--text-mid, #6B7E74)", marginTop: 8 }}>
                     <span>Subtotal</span><span>{INR(subtotal)}</span>
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: "#C44536", fontWeight: 600, marginTop: 2 }}>
@@ -2655,7 +2656,7 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
                   till that's trying to be fast. */}
               {picked && rules.enabled && maxPts > 0 && (
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, paddingTop: 10, borderTop: "1px dashed #E0D9C4" }}>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: "#6B7E74" }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-mid, #6B7E74)" }}>
                     Use points <span style={{ fontWeight: 400 }}>({ptsBalance} available)</span>
                   </span>
                   <div style={{ display: "flex", gap: 4, marginLeft: "auto", alignItems: "center" }}>
@@ -2696,7 +2697,7 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
                   ⚠ This bill is at a loss: {INR(-profit)}
                 </div>
               )}
-              <div style={{ fontSize: 11, fontWeight: 700, color: "#6B7E74", textTransform: "uppercase", letterSpacing: ".05em", margin: "12px 0 4px" }}>Payment</div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-mid, #6B7E74)", textTransform: "uppercase", letterSpacing: ".05em", margin: "12px 0 4px" }}>Payment</div>
               <div style={{ display: "flex", gap: 6 }}>
                 {["UPI", "Cash", "Udhari"].map((p) => (
                   <button key={p} className={"btn small " + (pay === p ? "primary" : "")} style={{ flex: 1 }} onClick={() => setPay(p)}>
@@ -2725,7 +2726,7 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
                             onMouseDown={(e) => { e.preventDefault(); setCustomer(c.name); if (c.mobile) setMobile(c.mobile); setCustFocus(false); }}
                             style={{ display: "flex", justifyContent: "space-between", gap: 8, width: "100%", textAlign: "left", background: "none", border: "none", borderBottom: "1px solid #F0F4F0", padding: "8px 10px", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>
                             <span style={{ fontWeight: 600 }}>{c.name}</span>
-                            <span style={{ color: "#8A9C90" }}>{c.mobile || "—"}</span>
+                            <span style={{ color: "var(--text-mid, #8A9C90)" }}>{c.mobile || "—"}</span>
                           </button>
                         ))}
                       </div>
@@ -2742,7 +2743,7 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
                   </div>
                   {+paidNow > 0 && (
                     <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6 }}>
-                      <span style={{ fontSize: 11.5, color: "#6B7E74", fontWeight: 600 }}>Paid via</span>
+                      <span style={{ fontSize: 11.5, color: "var(--text-mid, #6B7E74)", fontWeight: 600 }}>Paid via</span>
                       {["UPI", "Cash"].map((m) => (
                         <button key={m} className={"btn small " + (paidMode === m ? "primary" : "ghost")} onClick={() => setPaidMode(m)}>{m}</button>
                       ))}
@@ -3212,7 +3213,7 @@ function Inventory({ items, setItems, notify, log, cats = CATEGORIES, onAddCateg
                               <button className="btn small ghost" onClick={addBatchRow}>+ Add batch</button>
                               <button className="btn small primary" onClick={saveBatchEdit}>✓ Save batches</button>
                               <button className="btn small ghost" onClick={() => setBatchEdit(null)}>Cancel</button>
-                              <span style={{ fontSize: 11.5, color: "#8A9C90", marginLeft: "auto" }}>New stock total: <b>{batchEditSum} {i.unit}</b></span>
+                              <span style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)", marginLeft: "auto" }}>New stock total: <b>{batchEditSum} {i.unit}</b></span>
                             </div>
                           </div>
                         ) : (
@@ -3277,7 +3278,7 @@ function Inventory({ items, setItems, notify, log, cats = CATEGORIES, onAddCateg
               aria-label="Barcodes, separated by semicolons; the first is the default"
               style={{ resize: "vertical", minHeight: 62, lineHeight: 1.5, fontFamily: "inherit" }}
             />
-            <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: 4 }}>
+            <div style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)", marginTop: 4 }}>
               Separate multiple barcodes with “<b>;</b>” — scanning auto-adds it. Add as many as you like; the first is the item's default.
             </div>
           </Field>
@@ -3309,7 +3310,7 @@ function Inventory({ items, setItems, notify, log, cats = CATEGORIES, onAddCateg
             <Field label={form.id ? "Expiry (for added stock)" : "Expiry (optional)"}><input className="input" type="date" value={form.expiry} onChange={(e) => setForm({ ...form, expiry: e.target.value })} /></Field>
             <Field label="Alert when stock below"><input className="input" type="number" min="0" value={form.lowAt} onChange={(e) => setForm({ ...form, lowAt: e.target.value })} /></Field>
           </div>
-          {form.id && <div style={{ fontSize: 12, color: "#6B7E74", marginTop: 8 }}>Changing stock here adjusts batches automatically (increase adds a batch using the expiry above; decrease removes earliest-expiry stock first). For a specific dated batch, use <b>Restock</b>.</div>}
+          {form.id && <div style={{ fontSize: 12, color: "var(--text-mid, #6B7E74)", marginTop: 8 }}>Changing stock here adjusts batches automatically (increase adds a batch using the expiry above; decrease removes earliest-expiry stock first). For a specific dated batch, use <b>Restock</b>.</div>}
           <button className="btn primary big" style={{ width: "100%", marginTop: 14 }} onClick={save}>
             {form.id ? "Save changes" : "Add item"}
           </button>
@@ -3505,7 +3506,7 @@ function BarcodeCreator({ items, setItems, store = STORE, notify, log }) {
             <Field label="Expiry date"><input className="input" type="date" value={exp} onChange={(e) => setExp(e.target.value)} /></Field>
           </div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: -2, marginBottom: 12 }}>
-            <span style={{ fontSize: 11.5, color: "#6B7E74", alignSelf: "center" }}>Expiry quick-set:</span>
+            <span style={{ fontSize: 11.5, color: "var(--text-mid, #6B7E74)", alignSelf: "center" }}>Expiry quick-set:</span>
             {[["1w", 7], ["1m", 30], ["3m", 90], ["6m", 180], ["1y", 365]].map(([lbl, d]) => (
               <button key={lbl} className="btn small ghost" onClick={() => addExpiry(d)}>+{lbl}</button>
             ))}
@@ -3552,7 +3553,7 @@ function BarcodeCreator({ items, setItems, store = STORE, notify, log }) {
           <button className="btn primary big" style={{ width: "100%" }} disabled={!code.trim() || !!err} onClick={printLabels}>
             🖨 Print {Math.max(1, Math.min(300, +qty || 1))} label(s) · {sz.label.split(" (")[0]}
           </button>
-          <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: 10, lineHeight: 1.5 }}>
+          <div style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)", marginTop: 10, lineHeight: 1.5 }}>
             Labels print as a tiled sheet at true millimetre size with dashed cut guides — set your printer to 100% / “Actual size” (not “Fit”). Saving the barcode to an item lets the cashier scan it on the Billing screen.
           </div>
         </section>
@@ -3767,7 +3768,7 @@ function RawData({ items, setItems, setSales, setExpenses, notify, log }) {
             {busy ? "Reading file…" : "📂 Choose a file"}
             <input type="file" accept={RAW_ACCEPT} onChange={onFile} disabled={busy} style={{ display: "none" }} />
           </label>
-          <div style={{ fontSize: 11.5, color: "#8A9C90", margin: "8px 0 14px", textAlign: "center" }}>
+          <div style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)", margin: "8px 0 14px", textAlign: "center" }}>
             txt · csv · tsv · xls · xlsx · pdf · json
           </div>
           <div style={{ fontSize: 12, fontWeight: 700, color: "#465", marginBottom: 6 }}>…or paste data</div>
@@ -3785,7 +3786,7 @@ function RawData({ items, setItems, setSales, setExpenses, notify, log }) {
           />
           <button className="btn" style={{ width: "100%", marginTop: 8 }} onClick={processPaste}>Process pasted data</button>
           {err && <div style={{ color: "#C44536", fontSize: 13, marginTop: 10 }}>{err}</div>}
-          <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: 12, lineHeight: 1.5 }}>
+          <div style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)", marginTop: 12, lineHeight: 1.5 }}>
             {mode === "expenses"
               ? "Columns are auto-detected from headers (expense / description, amount, date). No headers? The text is the description, the number is the amount, and a date-looking value (e.g. 2026-06-01 or 01/06/2026) is the expense date. Blank dates default to today."
               : "Columns are auto-detected from headers (name / qty / buy / sell / amount / expiry). No headers? The name is read first, then numbers fill in as qty, buy, sell, amount — so 1 number is qty, 2 are qty + price, 3 are qty + buy + sell. A date-looking column (e.g. 2026-12-31 or 31/12/2026) is treated as the batch expiry."}
@@ -3794,7 +3795,7 @@ function RawData({ items, setItems, setSales, setExpenses, notify, log }) {
 
         <section style={S.panel}>
           <div style={S.panelHead}>
-            2 · Review &amp; edit{source ? <span style={{ fontWeight: 500, textTransform: "none", letterSpacing: 0, color: "#8A9C90", marginLeft: 8 }}>from {source}</span> : null}
+            2 · Review &amp; edit{source ? <span style={{ fontWeight: 500, textTransform: "none", letterSpacing: 0, color: "var(--text-mid, #8A9C90)", marginLeft: 8 }}>from {source}</span> : null}
             <button className="btn small ghost" style={{ marginLeft: "auto" }} onClick={addRow}>+ Add row</button>
           </div>
           {!rows ? (
@@ -3802,7 +3803,7 @@ function RawData({ items, setItems, setSales, setExpenses, notify, log }) {
           ) : (
             <>
               {mode === "sales" && (
-                <label style={{ fontSize: 12, color: "#6B7E74", display: "block", marginBottom: 10 }}>
+                <label style={{ fontSize: 12, color: "var(--text-mid, #6B7E74)", display: "block", marginBottom: 10 }}>
                   Sale date <input type="date" className="input" style={{ width: "auto", marginLeft: 6 }} value={saleDate} max={todayStr()} onChange={(e) => setSaleDate(e.target.value || todayStr())} />
                 </label>
               )}
@@ -3862,7 +3863,7 @@ function RawData({ items, setItems, setSales, setExpenses, notify, log }) {
                   </tbody>
                 </table>
               )}
-              <div style={{ fontSize: 12, color: "#6B7E74", margin: "10px 0" }}>
+              <div style={{ fontSize: 12, color: "var(--text-mid, #6B7E74)", margin: "10px 0" }}>
                 {mode === "inventory"
                   ? "Existing names get restocked; new names create items (blank sell = buy + 15%). Each row's expiry becomes its own dated batch; leave blank for no expiry."
                   : mode === "expenses"
@@ -4211,8 +4212,8 @@ function SalesHistory({ sales, items, staff, services = [], customerPackages = [
       </div>
 
       <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
-        <label style={{ fontSize: 12, color: "#6B7E74" }}>From <input type="date" className="input" style={{ width: "auto", marginLeft: 4 }} value={from} max={to || todayStr()} onChange={(e) => setFrom(e.target.value)} /></label>
-        <label style={{ fontSize: 12, color: "#6B7E74" }}>To <input type="date" className="input" style={{ width: "auto", marginLeft: 4 }} value={to} max={todayStr()} onChange={(e) => setTo(e.target.value)} /></label>
+        <label style={{ fontSize: 12, color: "var(--text-mid, #6B7E74)" }}>From <input type="date" className="input" style={{ width: "auto", marginLeft: 4 }} value={from} max={to || todayStr()} onChange={(e) => setFrom(e.target.value)} /></label>
+        <label style={{ fontSize: 12, color: "var(--text-mid, #6B7E74)" }}>To <input type="date" className="input" style={{ width: "auto", marginLeft: 4 }} value={to} max={todayStr()} onChange={(e) => setTo(e.target.value)} /></label>
         {(from || to) && <button className="btn ghost small" onClick={() => { setFrom(""); setTo(""); }}>Clear range</button>}
       </div>
 
@@ -4230,10 +4231,10 @@ function SalesHistory({ sales, items, staff, services = [], customerPackages = [
             onClick={isToday ? undefined : () => toggleDate(date)}
             {...(isToday ? {} : { role: "button", "aria-expanded": expanded })}
           >
-            {!isToday && <span style={{ color: "#8A9C90", marginRight: 6 }}>{expanded ? "▾" : "▸"}</span>}
+            {!isToday && <span style={{ color: "var(--text-mid, #8A9C90)", marginRight: 6 }}>{expanded ? "▾" : "▸"}</span>}
             {new Date(date + "T00:00").toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short", year: "numeric" })}
             {isToday && <span style={{ fontWeight: 600, color: "var(--brand)", marginLeft: 8 }}>· Today</span>}
-            <span style={{ fontWeight: 500, color: "#8A9C90", marginLeft: 8 }}>· {list.length} bill{list.length > 1 ? "s" : ""}</span>
+            <span style={{ fontWeight: 500, color: "var(--text-mid, #8A9C90)", marginLeft: 8 }}>· {list.length} bill{list.length > 1 ? "s" : ""}</span>
             <span style={{ marginLeft: "auto", fontWeight: 800 }}>
               {INR(list.reduce((a, s) => a + s.total, 0))}
               <span style={{ color: "var(--brand)", fontWeight: 700, fontSize: 12.5, marginLeft: 6 }}>(+{INR(money(list.reduce((a, s) => a + (s.profit || 0), 0)))})</span>
@@ -4244,7 +4245,7 @@ function SalesHistory({ sales, items, staff, services = [], customerPackages = [
               <div style={{ ...S.row, cursor: "pointer" }} onClick={() => setOpen(open === s.id ? null : s.id)}>
                 <span>
                   {s.time} · {s.lines.length} item{s.lines.length > 1 ? "s" : ""}
-                  {searching && <span style={{ marginLeft: 6, fontSize: 11, color: "#8A9C90" }}>{new Date(s.date + "T00:00").toLocaleDateString("en-IN", { day: "numeric", month: "short" })}</span>}
+                  {searching && <span style={{ marginLeft: 6, fontSize: 11, color: "var(--text-mid, #8A9C90)" }}>{new Date(s.date + "T00:00").toLocaleDateString("en-IN", { day: "numeric", month: "short" })}</span>}
                   {s.payment && <span style={{ marginLeft: 8, fontSize: 10.5, fontWeight: 800, color: PAY_COLORS[s.payment] || "#789", border: `1px solid ${PAY_COLORS[s.payment] || "#bbb"}`, borderRadius: 6, padding: "0 6px" }}>{s.payment}{s.customer ? " · " + s.customer : ""}{s.mobile ? " · " + s.mobile : ""}</span>}
                 </span>
                 <span><b>{INR(s.total)}</b> <span style={{ color: "var(--brand)", fontSize: 12 }}>(+{INR(s.profit)})</span>
@@ -4258,14 +4259,14 @@ function SalesHistory({ sales, items, staff, services = [], customerPackages = [
                       <span>
                         {l.name} × {l.qty}
                         {/* Who did the work — the first question asked of any past service bill. */}
-                        {isServiceLine(l) && l.staffId ? <span style={{ color: "#8A9C90" }}> · {staffName(staff, l.staffId)}</span> : null}
+                        {isServiceLine(l) && l.staffId ? <span style={{ color: "var(--text-mid, #8A9C90)" }}> · {staffName(staff, l.staffId)}</span> : null}
                       </span>
                       <span>{INR(l.amount)}</span>
                     </div>
                   ))}
                   {s.discount > 0 && (
                     <div style={{ borderTop: "1px dashed #D8E0D8", marginTop: 4, paddingTop: 4 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "2px 0", color: "#6B7E74" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "2px 0", color: "var(--text-mid, #6B7E74)" }}>
                         <span>Subtotal</span><span>{INR(s.subtotal != null ? s.subtotal : money(s.total + s.discount))}</span>
                       </div>
                       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "2px 0", color: "#C44536", fontWeight: 600 }}>
@@ -4346,7 +4347,7 @@ function SalesHistory({ sales, items, staff, services = [], customerPackages = [
               </div>
             )}
             {addQ.trim() && addMatches.length === 0 && (
-              <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: 6 }}>No catalogue match — add it as a new item below.</div>
+              <div style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)", marginTop: 6 }}>No catalogue match — add it as a new item below.</div>
             )}
             {/* Quick-catalogue a new item (mirrors Billing's Misc row): creates a real inventory item. */}
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", marginTop: 8 }}>
@@ -4356,7 +4357,7 @@ function SalesHistory({ sales, items, staff, services = [], customerPackages = [
               <input className="input" style={{ width: 86 }} type="number" min="0" step="0.01" placeholder="₹ sell" value={newPrice} onChange={(e) => setNewPrice(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addNewItem(); }} aria-label="New item sell price" />
               <button className="btn" onClick={addNewItem}>+ Add</button>
             </div>
-            <div style={{ fontSize: 11, color: "#8A9C90", marginTop: 6 }}>New items are catalogued (opening stock {OPENING_STOCK}); the quantity on this bill is deducted from stock when you save.</div>
+            <div style={{ fontSize: 11, color: "var(--text-mid, #8A9C90)", marginTop: 6 }}>New items are catalogued (opening stock {OPENING_STOCK}); the quantity on this bill is deducted from stock when you save.</div>
           </div>
 
           <Field label="Additional discount (₹)">
@@ -4364,7 +4365,7 @@ function SalesHistory({ sales, items, staff, services = [], customerPackages = [
           </Field>
           {editDiscount > 0 && (
             <>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: "#6B7E74" }}><span>Subtotal</span><span>{INR(editSubtotal)}</span></div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: "var(--text-mid, #6B7E74)" }}><span>Subtotal</span><span>{INR(editSubtotal)}</span></div>
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: "#C44536", fontWeight: 600 }}><span>Discount</span><span>−{INR(editDiscount)}</span></div>
             </>
           )}
@@ -4379,7 +4380,7 @@ function SalesHistory({ sales, items, staff, services = [], customerPackages = [
               </Field>
               {+editing.paid > 0 && (
                 <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: -4, marginBottom: 4 }}>
-                  <span style={{ fontSize: 11.5, color: "#6B7E74", fontWeight: 600 }}>Paid via</span>
+                  <span style={{ fontSize: 11.5, color: "var(--text-mid, #6B7E74)", fontWeight: 600 }}>Paid via</span>
                   {["UPI", "Cash"].map((m) => (
                     <button key={m} className={"btn small " + (editing.paidMode === m ? "primary" : "ghost")} onClick={() => setEditing({ ...editing, paidMode: m })}>{m}</button>
                   ))}
@@ -4388,24 +4389,24 @@ function SalesHistory({ sales, items, staff, services = [], customerPackages = [
               <div style={{ fontSize: 12, textAlign: "right", color: "#C44536", fontWeight: 600 }}>Outstanding: {INR(Math.max(0, money(editTotal - (+editing.paid || 0))))}</div>
             </div>
           )}
-          <div style={{ fontSize: 11.5, color: "#6B7E74", marginTop: 4 }}>Stock adjusts automatically for any quantity change.</div>
+          <div style={{ fontSize: 11.5, color: "var(--text-mid, #6B7E74)", marginTop: 4 }}>Stock adjusts automatically for any quantity change.</div>
           <button className="btn primary big" style={{ width: "100%", marginTop: 12 }} onClick={saveEdit}>Save changes</button>
         </Modal>
       )}
 
       {splitting && (
         <Modal title="Split bill across dates" onClose={() => setSplitting(null)}>
-          <div style={{ fontSize: 12.5, color: "#6B7E74", marginBottom: 10, lineHeight: 1.5 }}>
+          <div style={{ fontSize: 12.5, color: "var(--text-mid, #6B7E74)", marginBottom: 10, lineHeight: 1.5 }}>
             Original total <b>{INR(splitting.total)}</b>. Give each part a date and an amount — by default it's divided equally, but you can enter your own amounts. The parts must add up to exactly the original total. Profit and items are split in the same proportion, so the dashboard and finance graphs stay accurate. (Stock isn't affected.)
           </div>
           <div style={{ background: "#F4F7F4", borderRadius: 8, padding: "8px 12px", marginBottom: 10 }}>
             <div style={{ fontSize: 11.5, fontWeight: 700, color: "#465", marginBottom: 6 }}>Split over a date range</div>
             <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-              <label style={{ fontSize: 12, color: "#6B7E74" }}>From <input type="date" className="input" style={{ width: "auto", marginLeft: 4 }} max={splitting.rangeTo || todayStr()} value={splitting.rangeFrom} onChange={(e) => setRangeFrom(e.target.value)} /></label>
-              <label style={{ fontSize: 12, color: "#6B7E74" }}>To <input type="date" className="input" style={{ width: "auto", marginLeft: 4 }} max={todayStr()} value={splitting.rangeTo} onChange={(e) => setRangeTo(e.target.value)} /></label>
+              <label style={{ fontSize: 12, color: "var(--text-mid, #6B7E74)" }}>From <input type="date" className="input" style={{ width: "auto", marginLeft: 4 }} max={splitting.rangeTo || todayStr()} value={splitting.rangeFrom} onChange={(e) => setRangeFrom(e.target.value)} /></label>
+              <label style={{ fontSize: 12, color: "var(--text-mid, #6B7E74)" }}>To <input type="date" className="input" style={{ width: "auto", marginLeft: 4 }} max={todayStr()} value={splitting.rangeTo} onChange={(e) => setRangeTo(e.target.value)} /></label>
               <button className="btn small" onClick={applyRange}>Fill range</button>
             </div>
-            <div style={{ fontSize: 11, color: "#8A9C90", marginTop: 6 }}>Creates one part per day in the range, divided equally — then edit any amount below.</div>
+            <div style={{ fontSize: 11, color: "var(--text-mid, #8A9C90)", marginTop: 6 }}>Creates one part per day in the range, divided equally — then edit any amount below.</div>
           </div>
           <table className="tbl">
             <thead><tr><th>Date</th><th style={{ textAlign: "right" }}>Amount ₹</th><th style={{ width: 30 }}></th></tr></thead>
@@ -4550,7 +4551,7 @@ function Logs({ logs, setLogs, notify }) {
       </Header>
 
       <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
-        <label style={{ fontSize: 12, color: "#6B7E74" }}>Day <input type="date" className="input" style={{ width: "auto", marginLeft: 4 }} value={date} max={todayStr()} onChange={(e) => setDate(e.target.value)} /></label>
+        <label style={{ fontSize: 12, color: "var(--text-mid, #6B7E74)" }}>Day <input type="date" className="input" style={{ width: "auto", marginLeft: 4 }} value={date} max={todayStr()} onChange={(e) => setDate(e.target.value)} /></label>
         <select className="input" style={{ width: 180 }} value={type} onChange={(e) => setType(e.target.value)}>
           <option value="all">All activity</option>
           {LOG_TYPES.map((t) => <option key={t} value={t}>{t[0].toUpperCase() + t.slice(1)}</option>)}
@@ -4628,7 +4629,7 @@ function Changelog() {
 }
 
 // ---------- Finance analytics helpers ----------
-const PIE_COLORS = ["#1b5e43", "#E8A33D", "#2A6FB0", "#C44536", "#7A5AB0", "#3DA17A", "#B0762A", "#8A9C90"];
+const PIE_COLORS = ["#1b5e43", "#E8A33D", "#2A6FB0", "#C44536", "#7A5AB0", "#3DA17A", "#B0762A", "var(--text-mid, #8A9C90)"];
 const inrTick = (v) => "₹" + (Math.abs(v) >= 1000 ? (v / 1000).toFixed(v % 1000 ? 1 : 0) + "k" : v);
 // Value labels sitting on top of vertical bars (compact ₹). Zeros are hidden so
 // sparse charts stay uncluttered.
@@ -4833,8 +4834,8 @@ function Finance({ sales, expenses }) {
 
       {preset === "custom" && (
         <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
-          <label style={{ fontSize: 12, color: "#6B7E74" }}>From <input type="date" className="input" style={{ width: "auto", marginLeft: 4 }} value={cfrom} max={cto || todayStr()} onChange={(e) => setCfrom(e.target.value)} /></label>
-          <label style={{ fontSize: 12, color: "#6B7E74" }}>To <input type="date" className="input" style={{ width: "auto", marginLeft: 4 }} value={cto} max={todayStr()} onChange={(e) => setCto(e.target.value)} /></label>
+          <label style={{ fontSize: 12, color: "var(--text-mid, #6B7E74)" }}>From <input type="date" className="input" style={{ width: "auto", marginLeft: 4 }} value={cfrom} max={cto || todayStr()} onChange={(e) => setCfrom(e.target.value)} /></label>
+          <label style={{ fontSize: 12, color: "var(--text-mid, #6B7E74)" }}>To <input type="date" className="input" style={{ width: "auto", marginLeft: 4 }} value={cto} max={todayStr()} onChange={(e) => setCto(e.target.value)} /></label>
         </div>
       )}
 
@@ -4976,7 +4977,7 @@ function Heatmap({ data }) {
       <div style={{ display: "inline-block", minWidth: "100%" }}>
         <div style={{ display: "flex", gap: 3, marginLeft: 38, marginBottom: 3 }}>
           {hours.map((h) => (
-            <div key={h} style={{ ...cell, height: "auto", textAlign: "center", fontSize: 9.5, color: "#8A9C90", fontWeight: 600 }}>{hourLabel(h)}</div>
+            <div key={h} style={{ ...cell, height: "auto", textAlign: "center", fontSize: 9.5, color: "var(--text-mid, #8A9C90)", fontWeight: 600 }}>{hourLabel(h)}</div>
           ))}
         </div>
         {DOW_ORDER.map((d) => (
@@ -4991,7 +4992,7 @@ function Heatmap({ data }) {
             })}
           </div>
         ))}
-        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, marginLeft: 38, fontSize: 10.5, color: "#8A9C90" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, marginLeft: 38, fontSize: 10.5, color: "var(--text-mid, #8A9C90)" }}>
           <span>Quieter</span>
           <div style={{ display: "flex", gap: 2 }}>
             {[0.05, 0.25, 0.5, 0.75, 1].map((t) => <div key={t} style={{ width: 16, height: 10, borderRadius: 2, background: heatColor(t, 1) }} />)}
@@ -5095,8 +5096,8 @@ function Stats({ sales, expenses, items, customers = [], appointments = [] }) {
 
       {preset === "custom" && (
         <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
-          <label style={{ fontSize: 12, color: "#6B7E74" }}>From <input type="date" className="input" style={{ width: "auto", marginLeft: 4 }} value={cfrom} max={cto || todayStr()} onChange={(e) => setCfrom(e.target.value)} /></label>
-          <label style={{ fontSize: 12, color: "#6B7E74" }}>To <input type="date" className="input" style={{ width: "auto", marginLeft: 4 }} value={cto} max={todayStr()} onChange={(e) => setCto(e.target.value)} /></label>
+          <label style={{ fontSize: 12, color: "var(--text-mid, #6B7E74)" }}>From <input type="date" className="input" style={{ width: "auto", marginLeft: 4 }} value={cfrom} max={cto || todayStr()} onChange={(e) => setCfrom(e.target.value)} /></label>
+          <label style={{ fontSize: 12, color: "var(--text-mid, #6B7E74)" }}>To <input type="date" className="input" style={{ width: "auto", marginLeft: 4 }} value={cto} max={todayStr()} onChange={(e) => setCto(e.target.value)} /></label>
         </div>
       )}
 
@@ -5257,7 +5258,7 @@ function Stats({ sales, expenses, items, customers = [], appointments = [] }) {
                   ))}
                 </div>
               </div>
-              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: "#6B7E74", marginBottom: 8, cursor: "pointer" }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: "var(--text-mid, #6B7E74)", marginBottom: 8, cursor: "pointer" }}>
                 <input type="checkbox" checked={includeMisc} onChange={(e) => setIncludeMisc(e.target.checked)} />
                 Include Misc / consolidated rows (they distort real top-sellers)
               </label>
@@ -5288,7 +5289,7 @@ function Stats({ sales, expenses, items, customers = [], appointments = [] }) {
                     <ResponsiveContainer width="100%" height="100%">
                       <PieChart>
                         <Pie data={pay.rows} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={52} outerRadius={80} paddingAngle={2} stroke="none">
-                          {pay.rows.map((r) => <Cell key={r.name} fill={PAY_COLORS[r.name] || "#8A9C90"} />)}
+                          {pay.rows.map((r) => <Cell key={r.name} fill={PAY_COLORS[r.name] || "var(--text-mid, #8A9C90)"} />)}
                         </Pie>
                         <Tooltip formatter={(v, n) => [formatINR(v), n]} />
                       </PieChart>
@@ -5296,7 +5297,7 @@ function Stats({ sales, expenses, items, customers = [], appointments = [] }) {
                     {/* Center total — a positioned overlay renders reliably across Recharts versions. */}
                     <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", pointerEvents: "none" }}>
                       <div style={{ textAlign: "center" }}>
-                        <div style={{ fontSize: 11, color: "#8A9C90" }}>Total</div>
+                        <div style={{ fontSize: 11, color: "var(--text-mid, #8A9C90)" }}>Total</div>
                         <div style={{ fontSize: 15, fontWeight: 800, color: "var(--ink)" }}>{inrCompact(pay.total)}</div>
                       </div>
                     </div>
@@ -5305,9 +5306,9 @@ function Stats({ sales, expenses, items, customers = [], appointments = [] }) {
                     {pay.rows.map((r) => (
                       <div key={r.name} style={S.row}>
                         <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <span style={{ width: 10, height: 10, borderRadius: 3, background: PAY_COLORS[r.name] || "#8A9C90" }} />{r.name}
+                          <span style={{ width: 10, height: 10, borderRadius: 3, background: PAY_COLORS[r.name] || "var(--text-mid, #8A9C90)" }} />{r.name}
                         </span>
-                        <b>{formatINR(r.value)} <span style={{ color: "#8A9C90", fontWeight: 500 }}>· {r.pct}%</span></b>
+                        <b>{formatINR(r.value)} <span style={{ color: "var(--text-mid, #8A9C90)", fontWeight: 500 }}>· {r.pct}%</span></b>
                       </div>
                     ))}
                   </div>
@@ -5349,7 +5350,7 @@ function Stats({ sales, expenses, items, customers = [], appointments = [] }) {
               )}
             </ChartCard>
           </div>
-          <div style={{ fontSize: 12, color: "#6B7E74", marginTop: 8 }}>
+          <div style={{ fontSize: 12, color: "var(--text-mid, #6B7E74)", marginTop: 8 }}>
             <b>Capital / Setup Cost</b> (one-time): {formatINR(be.capex)} — this is investment, never subtracted from trading profit.
             {est.status === "reached" && <> You’ve recovered it (took {est.days} day(s)).</>}
             {est.status === "projected" && <> At about {formatINR(est.perDay)}/day of profit, roughly {est.daysLeft} day(s) to go.</>}
@@ -5357,7 +5358,7 @@ function Stats({ sales, expenses, items, customers = [], appointments = [] }) {
 
           <div style={sectionHead}>
             Capital / setup spending
-            {preset === "allTime" && <span style={{ fontWeight: 500, color: "#8A9C90" }}> · since {new Date(CAPEX_START + "T00:00").toLocaleDateString("en-IN", { month: "short", year: "numeric" })}</span>}
+            {preset === "allTime" && <span style={{ fontWeight: 500, color: "var(--text-mid, #8A9C90)" }}> · since {new Date(CAPEX_START + "T00:00").toLocaleDateString("en-IN", { month: "short", year: "numeric" })}</span>}
           </div>
           {pExp.length === 0 ? (
             <section style={S.panel}><Empty text="No capital / setup spending recorded in this period." /></section>
@@ -5415,7 +5416,7 @@ function Stats({ sales, expenses, items, customers = [], appointments = [] }) {
               )}
             </section>
             <section style={S.panel}>
-              <div style={S.panelHead}>Slow movers — in stock, no sales this period <span style={{ fontWeight: 500, textTransform: "none", letterSpacing: 0, color: "#8A9C90", marginLeft: 8 }}>{dead.length}</span></div>
+              <div style={S.panelHead}>Slow movers — in stock, no sales this period <span style={{ fontWeight: 500, textTransform: "none", letterSpacing: 0, color: "var(--text-mid, #8A9C90)", marginLeft: 8 }}>{dead.length}</span></div>
               {dead.length === 0 ? (
                 <Empty text="Everything in stock sold at least once. 👍" />
               ) : (
@@ -5423,7 +5424,7 @@ function Stats({ sales, expenses, items, customers = [], appointments = [] }) {
                   {dead.slice(0, 10).map((i) => (
                     <div key={i.name} style={S.row}><span>{i.name} <span style={{ color: "#9AA", fontSize: 11 }}>· {i.stock} {i.unit}</span></span><b>{formatINR(i.value)}</b></div>
                   ))}
-                  {dead.length > 10 && <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: 6 }}>+ {dead.length - 10} more…</div>}
+                  {dead.length > 10 && <div style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)", marginTop: 6 }}>+ {dead.length - 10} more…</div>}
                 </>
               )}
             </section>
@@ -5593,7 +5594,7 @@ function Udhari({ sales, setSales, notify, log }) {
         <Card label="Top debtor" value={udhari.withDue[0] ? udhari.withDue[0].name : "—"} sub={udhari.withDue[0] ? INR(udhari.withDue[0].outstanding) : "—"} />
       </div>
       <section style={{ ...S.panel, marginBottom: 4 }}>
-        <div style={S.panelHead}>Who owes you <span style={{ fontWeight: 500, textTransform: "none", letterSpacing: 0, color: "#8A9C90", marginLeft: 8 }}>{udhari.withDue.length}</span></div>
+        <div style={S.panelHead}>Who owes you <span style={{ fontWeight: 500, textTransform: "none", letterSpacing: 0, color: "var(--text-mid, #8A9C90)", marginLeft: 8 }}>{udhari.withDue.length}</span></div>
         {udhari.withDue.length === 0 ? (
           <Empty text="No outstanding credit — all udhari settled. 🎉" />
         ) : (
@@ -5609,7 +5610,7 @@ function Udhari({ sales, setSales, notify, log }) {
                 return (
                   <Fragment key={c.name}>
                     <tr onClick={() => toggle(c.name)} style={{ cursor: "pointer" }}>
-                      <td style={{ color: "#8A9C90" }}>{isOpen ? "▾" : "▸"}</td>
+                      <td style={{ color: "var(--text-mid, #8A9C90)" }}>{isOpen ? "▾" : "▸"}</td>
                       <td style={{ fontWeight: 600 }}>{c.name}</td>
                       <td style={{ color: "#677" }}>{c.mobile || "—"}</td>
                       <td style={{ textAlign: "right" }}>{c.bills}</td>
@@ -5628,7 +5629,7 @@ function Udhari({ sales, setSales, notify, log }) {
                           <tr onClick={() => toggleBill(b.id)} style={{ background: "#FAFBF8", cursor: "pointer" }}>
                             <td></td>
                             <td colSpan={3} style={{ fontSize: 12.5, color: "#566" }}>
-                              <span style={{ color: "#8A9C90", marginRight: 4 }}>{billOpen ? "▾" : "▸"}</span>
+                              <span style={{ color: "var(--text-mid, #8A9C90)", marginRight: 4 }}>{billOpen ? "▾" : "▸"}</span>
                               {b.date}{b.time ? " · " + b.time : ""} · {nLines} item{nLines === 1 ? "" : "s"} · bill {INR(b.total)}{(b.paid || 0) > 0 ? ` · paid ${INR(b.paid)}${b.paidMode ? " (" + b.paidMode + ")" : ""}` : ""}
                             </td>
                             <td style={{ textAlign: "right", fontWeight: 700, color: "#C44536" }}>{INR(billOut(b))}</td>
@@ -5642,7 +5643,7 @@ function Udhari({ sales, setSales, notify, log }) {
                               <td colSpan={5} style={{ paddingTop: 0 }}>
                                 <div style={{ background: "#fff", border: "1px solid #EEF3EE", borderRadius: 8, padding: "8px 12px" }}>
                                   {nLines === 0 ? (
-                                    <div style={{ fontSize: 12.5, color: "#8A9C90" }}>No line items on this bill.</div>
+                                    <div style={{ fontSize: 12.5, color: "var(--text-mid, #8A9C90)" }}>No line items on this bill.</div>
                                   ) : (b.lines).map((l, i) => (
                                     <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "3px 0" }}>
                                       <span>{l.name} × {l.qty}</span><span>{INR(l.amount)}</span>
@@ -5664,14 +5665,14 @@ function Udhari({ sales, setSales, notify, log }) {
             </tbody>
           </table>
         )}
-        <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: 8 }}>“Pay total” settles a customer's whole balance in one go (oldest bills first). Or tap a customer to expand and pay a single bill — full or part, Cash / UPI. Sales History updates automatically.</div>
+        <div style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)", marginTop: 8 }}>“Pay total” settles a customer's whole balance in one go (oldest bills first). Or tap a customer to expand and pay a single bill — full or part, Cash / UPI. Sales History updates automatically.</div>
       </section>
 
       <section style={{ ...S.panel, marginTop: 16 }}>
         <div style={S.panelHead}>
           History
-          <span style={{ fontWeight: 500, textTransform: "none", letterSpacing: 0, color: "#8A9C90", marginLeft: 8 }}>{history.events.length} event{history.events.length === 1 ? "" : "s"}</span>
-          <span style={{ marginLeft: "auto", fontWeight: 500, fontSize: 12, color: "#8A9C90", textTransform: "none", letterSpacing: 0 }}>
+          <span style={{ fontWeight: 500, textTransform: "none", letterSpacing: 0, color: "var(--text-mid, #8A9C90)", marginLeft: 8 }}>{history.events.length} event{history.events.length === 1 ? "" : "s"}</span>
+          <span style={{ marginLeft: "auto", fontWeight: 500, fontSize: 12, color: "var(--text-mid, #8A9C90)", textTransform: "none", letterSpacing: 0 }}>
             Credit given <b style={{ color: "#C44536" }}>{INR(history.totalCredit)}</b> · Repaid <b style={{ color: "var(--brand)" }}>{INR(history.totalPaid)}</b>
           </span>
         </div>
@@ -5697,7 +5698,7 @@ function Udhari({ sales, setSales, notify, log }) {
             </tbody>
           </table>
         )}
-        {history.events.length > 150 && <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: 8 }}>Showing the most recent 150 of {history.events.length} events.</div>}
+        {history.events.length > 150 && <div style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)", marginTop: 8 }}>Showing the most recent 150 of {history.events.length} events.</div>}
       </section>
 
       {payShow && (
@@ -5726,7 +5727,7 @@ function Udhari({ sales, setSales, notify, log }) {
               </div>
             </Field>
             <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 12 }}>
-              <span style={{ fontSize: 12, color: "#6B7E74", fontWeight: 600 }}>Paid via</span>
+              <span style={{ fontSize: 12, color: "var(--text-mid, #6B7E74)", fontWeight: 600 }}>Paid via</span>
               {["Cash", "UPI"].map((m) => (
                 <button key={m} className={"btn small " + (payMode === m ? "primary" : "ghost")} onClick={() => setPayMode(m)}>{m}</button>
               ))}
@@ -5738,7 +5739,7 @@ function Udhari({ sales, setSales, notify, log }) {
                 : <span style={{ color: "var(--brand)" }}> · {paying.type === "customer" ? "clears all bills 🎉" : "clears this bill 🎉"}</span>}
             </div>
             {paying.type === "customer" && payAmtNum > 0 && (
-              <div style={{ fontSize: 11.5, color: "#8A9C90", textAlign: "right", marginBottom: 14 }}>
+              <div style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)", textAlign: "right", marginBottom: 14 }}>
                 Applied oldest bills first{payClears > 0 ? ` · clears ${payClears} bill${payClears === 1 ? "" : "s"}` : ""}
               </div>
             )}
@@ -5913,8 +5914,8 @@ function VendorBills({ bills, setBills, setDailyBills, online, notify, log }) {
           <Field label={editId ? "Replace proof (optional)" : "Bill proof (optional)"}>
             <input ref={fileRef} className="input" type="file" accept={PROOF_ACCEPT} onChange={onFile} />
           </Field>
-          {editId && !file && (() => { const cur = bills.find((b) => b.id === editId); return cur?.fileURL ? <div style={{ fontSize: 11.5, color: "#6B7E74", marginTop: -6, marginBottom: 6 }}>Current proof: <a href={cur.fileURL} target="_blank" rel="noopener noreferrer">{cur.fileName || "view"}</a> — choose a file to replace it.</div> : null; })()}
-          <div style={{ fontSize: 11, color: "#8A9C90", marginBottom: 10 }}>JPG/PNG/PDF/DOC/XLS… up to 10 MB. Stored securely in the cloud.</div>
+          {editId && !file && (() => { const cur = bills.find((b) => b.id === editId); return cur?.fileURL ? <div style={{ fontSize: 11.5, color: "var(--text-mid, #6B7E74)", marginTop: -6, marginBottom: 6 }}>Current proof: <a href={cur.fileURL} target="_blank" rel="noopener noreferrer">{cur.fileName || "view"}</a> — choose a file to replace it.</div> : null; })()}
+          <div style={{ fontSize: 11, color: "var(--text-mid, #8A9C90)", marginBottom: 10 }}>JPG/PNG/PDF/DOC/XLS… up to 10 MB. Stored securely in the cloud.</div>
           {err && (
             <div style={{ fontSize: 12, color: "#C44536", background: "#FBEDEB", border: "1px solid #E2B6B0", borderRadius: 8, padding: "8px 10px", marginBottom: 10, lineHeight: 1.5 }}>
               {err}
@@ -5928,9 +5929,9 @@ function VendorBills({ bills, setBills, setDailyBills, online, notify, log }) {
         {/* list + filters */}
         <section style={S.panel}>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
-            <label style={{ fontSize: 12, color: "#6B7E74" }}>From <input type="date" className="input" style={{ width: "auto", marginLeft: 4 }} value={from} max={to || todayStr()} onChange={(e) => setFrom(e.target.value)} /></label>
-            <label style={{ fontSize: 12, color: "#6B7E74" }}>To <input type="date" className="input" style={{ width: "auto", marginLeft: 4 }} value={to} max={todayStr()} onChange={(e) => setTo(e.target.value)} /></label>
-            <label style={{ fontSize: 12, color: "#6B7E74" }}>Month <input type="month" className="input" style={{ width: "auto", marginLeft: 4 }} max={todayStr().slice(0, 7)} onChange={(e) => setMonth(e.target.value)} /></label>
+            <label style={{ fontSize: 12, color: "var(--text-mid, #6B7E74)" }}>From <input type="date" className="input" style={{ width: "auto", marginLeft: 4 }} value={from} max={to || todayStr()} onChange={(e) => setFrom(e.target.value)} /></label>
+            <label style={{ fontSize: 12, color: "var(--text-mid, #6B7E74)" }}>To <input type="date" className="input" style={{ width: "auto", marginLeft: 4 }} value={to} max={todayStr()} onChange={(e) => setTo(e.target.value)} /></label>
+            <label style={{ fontSize: 12, color: "var(--text-mid, #6B7E74)" }}>Month <input type="month" className="input" style={{ width: "auto", marginLeft: 4 }} max={todayStr().slice(0, 7)} onChange={(e) => setMonth(e.target.value)} /></label>
             <select className="input" style={{ width: "auto" }} value={statusF} onChange={(e) => setStatusF(e.target.value)}>
               <option value="all">All status</option>
               {BILL_STATUS.map((s) => <option key={s} value={s}>{s[0].toUpperCase() + s.slice(1)}</option>)}
@@ -6069,7 +6070,7 @@ function Expenses({ expenses, setExpenses, notify, log }) {
     <div>
       <Header title="Add Expense" sub="Record shop expenses — rent, electricity, supplies, salaries…">
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-          <label style={{ fontSize: 12, color: showAll ? "#9AA" : "#6B7E74" }}>
+          <label style={{ fontSize: 12, color: showAll ? "#9AA" : "var(--text-mid, #6B7E74)" }}>
             Month <input type="month" className="input" style={{ width: "auto", marginLeft: 4 }} value={month} max={todayStr().slice(0, 7)} disabled={showAll} onChange={(e) => setMonth(e.target.value || todayStr().slice(0, 7))} />
           </label>
           <button className={"btn small " + (showAll ? "primary" : "ghost")} onClick={() => setShowAll((v) => !v)}>
@@ -6092,7 +6093,7 @@ function Expenses({ expenses, setExpenses, notify, log }) {
         <section style={S.panel}>
           <div style={S.panelHead}>
             {showAll ? "All expenses" : monthLabel}
-            <span style={{ fontWeight: 500, textTransform: "none", letterSpacing: 0, color: "#8A9C90", marginLeft: 8 }}>{listed.length} {listed.length === 1 ? "entry" : "entries"}</span>
+            <span style={{ fontWeight: 500, textTransform: "none", letterSpacing: 0, color: "var(--text-mid, #8A9C90)", marginLeft: 8 }}>{listed.length} {listed.length === 1 ? "entry" : "entries"}</span>
             <span style={{ marginLeft: "auto", fontWeight: 800 }}>{INR(total)}</span>
           </div>
           {sorted.length === 0 ? (
@@ -6244,7 +6245,7 @@ function StoreConfig({ config, setConfig, notify, log, user, role }) {
               <button className="btn small ghost" onClick={() => set(keyName, "")}>Use default</button>
             )}
           </div>
-          <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: 5 }}>
+          <div style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)", marginTop: 5 }}>
             {draft[keyName] ? `Custom image · ~${kb(draft[keyName])} KB` : "Using the built-in default"}
             {hint ? <> · {hint}</> : null}
           </div>
@@ -6275,7 +6276,7 @@ function StoreConfig({ config, setConfig, notify, log, user, role }) {
               <input className="input" value={draft.pcIp} placeholder="e.g. 192.168.1.50" onChange={(e) => set("pcIp", e.target.value)} />
             </Field>
           </div>
-          <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: -2 }}>
+          <div style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)", marginTop: -2 }}>
             The counter PC's address on the shop's local network — used to reach a local print server / POS on that machine.
             Accepts a plain IPv4, optionally with a port (e.g. <code>192.168.1.50:9100</code>).
           </div>
@@ -6285,7 +6286,7 @@ function StoreConfig({ config, setConfig, notify, log, user, role }) {
             <Field label="Opens at"><input className="input" type="time" step={900} value={draft.openTime} onChange={(e) => set("openTime", e.target.value)} /></Field>
             <Field label="Closes at"><input className="input" type="time" step={900} value={draft.closeTime} onChange={(e) => set("closeTime", e.target.value)} /></Field>
           </div>
-          <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: -2 }}>
+          <div style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)", marginTop: -2 }}>
             These bound the appointment grid: it runs from opening to closing in 15-minute rows,
             and a booking outside them is refused rather than rendered off-screen.
           </div>
@@ -6303,12 +6304,12 @@ function StoreConfig({ config, setConfig, notify, log, user, role }) {
               <input className="input" value={draft.upiName} placeholder={draft.name.trim() || STORE.name} onChange={(e) => set("upiName", e.target.value)} />
             </Field>
           </div>
-          <div style={{ fontSize: 11.5, color: "#8A9C90", margin: "-2px 0 14px", lineHeight: 1.5 }}>
+          <div style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)", margin: "-2px 0 14px", lineHeight: 1.5 }}>
             Set your UPI ID and the billing screen &amp; receipt show a QR that <b>already contains the bill amount</b> — the customer scans and pays without typing. Payee name is optional (defaults to the shop name). Leave the UPI ID blank to use the fixed image below instead.
           </div>
 
           <ImageField label="Payment QR image (fallback)" keyName="paymentQr" maxDim={480} fallback={PAYMENT_QR_SRC} hint="used on receipts only when no UPI ID is set" />
-          <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: 4, lineHeight: 1.5 }}>
+          <div style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)", marginTop: 4, lineHeight: 1.5 }}>
             Images are automatically resized and stored with your shop data, so they sync to every signed-in device. Leave a field on “default” to keep the bundled image.
           </div>
         </section>
@@ -6339,13 +6340,14 @@ function StoreConfig({ config, setConfig, notify, log, user, role }) {
             );
           })}
         </div>
-        <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: 10, lineHeight: 1.5 }}>
+        <div style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)", marginTop: 10, lineHeight: 1.5 }}>
           Sets the sidebar and accent colours across the whole app, for every signed-in device. Pick one, then <b>Save settings</b> to apply it. Charts and printed receipts keep their own colours for clarity.
         </div>
 
-        {/* Service icons — the second theme axis. Glass chips look right on a bright counter
-            tablet; flat ones read faster in a shop with sunlight on the screen. */}
-        <div style={{ ...S.panelHead, marginTop: 18 }}>Service icons</div>
+        {/* Appearance — the whole-app skin (data-theme). Each option previews itself: the button
+            carries its own data-theme, so the "Advanced" tile really is dark glass with gilded
+            chips, and "Basic" really is the flat light look, whichever skin the app is wearing. */}
+        <div style={{ ...S.panelHead, marginTop: 18 }}>Appearance</div>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           {ICON_STYLE_KEYS.map((key) => {
             const active = draft.iconStyle === key;
@@ -6354,9 +6356,10 @@ function StoreConfig({ config, setConfig, notify, log, user, role }) {
                 key={key} type="button" onClick={() => set("iconStyle", key)} aria-pressed={active}
                 data-theme={key}
                 style={{
-                  display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderRadius: 12,
-                  border: active ? "2px solid var(--brand)" : "1.5px solid #DDE8DE",
-                  background: "#fff", cursor: "pointer", fontFamily: "inherit", textAlign: "left", flex: "1 1 200px",
+                  display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", borderRadius: 12, minHeight: 44,
+                  border: active ? "2px solid var(--accent, var(--brand))" : "1.5px solid var(--border, #DDE8DE)",
+                  background: "var(--bg-base, #fff)", backgroundImage: "var(--bg-gradient, none)",
+                  cursor: "pointer", fontFamily: "inherit", textAlign: "left", flex: "1 1 200px",
                 }}
               >
                 <span style={{ display: "flex", gap: 5 }}>
@@ -6365,16 +6368,18 @@ function StoreConfig({ config, setConfig, notify, log, user, role }) {
                   <ServiceIconChip icon="spa" size={30} />
                 </span>
                 <span>
-                  <span style={{ display: "block", fontSize: 13.5, fontWeight: active ? 800 : 600, color: "#25342C" }}>{ICON_STYLES[key].label}</span>
-                  <span style={{ fontSize: 11.5, color: "#8A9C90" }}>{ICON_STYLES[key].hint}</span>
+                  <span style={{ display: "block", fontSize: 13.5, fontWeight: active ? 800 : 600, color: "var(--text-hi, #25342C)" }}>
+                    {ICON_STYLES[key].label}{key === "advanced" ? " ✨" : ""}
+                  </span>
+                  <span style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)" }}>{ICON_STYLES[key].hint}</span>
                 </span>
-                {active && <span style={{ marginLeft: "auto", fontSize: 16, fontWeight: 900, color: "var(--brand)" }}>✓</span>}
+                {active && <span style={{ marginLeft: "auto", fontSize: 16, fontWeight: 900, color: "var(--accent, var(--brand))" }}>✓</span>}
               </button>
             );
           })}
         </div>
-        <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: 8, lineHeight: 1.5 }}>
-          Icons appear on the billing screen, the appointment diary, this menu and each customer&apos;s visit history. They are worked out from the service name — override one service&apos;s icon under <b>Services → Edit</b>. Printed receipts are unaffected.
+        <div style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)", marginTop: 8, lineHeight: 1.5 }}>
+          Sets the look of the whole app on <b>every</b> signed-in device — the backdrop, panels, buttons and the service icons. <b>Advanced</b> is a dark, glass finish; <b>Basic</b> is the classic bright, flat look. Printed receipts stay plain black-on-white whichever you pick.
         </div>
       </section>
 
@@ -6384,8 +6389,8 @@ function StoreConfig({ config, setConfig, notify, log, user, role }) {
           <img src={draft.logo || LOGO_SRC} alt="" style={{ width: 48, height: 48, borderRadius: 10, objectFit: "contain", background: "#fff", border: "1px solid #E2EAE3", padding: 3 }} />
           <div>
             <div style={{ fontWeight: 800, fontSize: 16 }}>{draft.name.trim() || STORE.name}</div>
-            <div style={{ fontSize: 12.5, color: "#6B7E74", whiteSpace: "pre-line" }}>{draft.address.trim() || STORE.address}</div>
-            {draft.phone.trim() && <div style={{ fontSize: 12.5, color: "#6B7E74" }}>☎ {draft.phone.trim()}</div>}
+            <div style={{ fontSize: 12.5, color: "var(--text-mid, #6B7E74)", whiteSpace: "pre-line" }}>{draft.address.trim() || STORE.address}</div>
+            {draft.phone.trim() && <div style={{ fontSize: 12.5, color: "var(--text-mid, #6B7E74)" }}>☎ {draft.phone.trim()}</div>}
           </div>
         </div>
       </section>
@@ -6464,13 +6469,13 @@ function LoyaltyConfig({ config, setConfig, notify, log }) {
             <b>{Math.floor((2000 / 100) * n(draft.earnRate) || 0)} points</b> — worth <b>{INR(example)}</b> off a future visit.
           </div>
 
-          <div style={S.panelHead}>Tiers <span style={{ fontWeight: 400, color: "#8A9C90" }}>· by spend over the last 12 months</span></div>
+          <div style={S.panelHead}>Tiers <span style={{ fontWeight: 400, color: "var(--text-mid, #8A9C90)" }}>· by spend over the last 12 months</span></div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
             <Field label="Silver from (₹)"><input className="input" inputMode="numeric" value={draft.silver} onChange={(e) => set("silver", e.target.value)} /></Field>
             <Field label="Gold from (₹)"><input className="input" inputMode="numeric" value={draft.gold} onChange={(e) => set("gold", e.target.value)} /></Field>
             <Field label="Platinum from (₹)"><input className="input" inputMode="numeric" value={draft.platinum} onChange={(e) => set("platinum", e.target.value)} /></Field>
           </div>
-          <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: -4, marginBottom: 10 }}>
+          <div style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)", marginTop: -4, marginBottom: 10 }}>
             Rolling 12 months, not lifetime — a tier should say a customer is valuable <i>now</i>.
             Set a threshold to 0 to turn that tier off.
           </div>
@@ -6480,7 +6485,7 @@ function LoyaltyConfig({ config, setConfig, notify, log }) {
       <div style={{ display: "flex", justifyContent: "flex-end" }}>
         <button className="btn primary" onClick={save}>Save loyalty rules</button>
       </div>
-      <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: 8, lineHeight: 1.6 }}>
+      <div style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)", marginTop: 8, lineHeight: 1.6 }}>
         Changing these affects future bills only. Points already given stay as they were —
         the ledger is the bills themselves, so history can't be rewritten from here.
       </div>
@@ -6635,7 +6640,7 @@ function Appointments({
                 key={t}
                 style={{
                   position: "absolute", top: (t - hours.openMin) * PX_PER_MIN, right: 6,
-                  fontSize: 10.5, color: t % 60 === 0 ? "#5E7468" : "#C3CFC7",
+                  fontSize: 10.5, color: t % 60 === 0 ? "var(--text-mid, #5E7468)" : "#C3CFC7",
                   fontWeight: t % 60 === 0 ? 700 : 400, transform: "translateY(-50%)",
                 }}
               >
@@ -6684,8 +6689,8 @@ function Appointments({
                     style={{
                       position: "absolute", top, height: h,
                       left: `calc(${(col / cols) * 100}% + 2px)`, width: `calc(${100 / cols}% - 4px)`,
-                      background: appt.status === "blocked" ? "repeating-linear-gradient(45deg, #E7EBE8, #E7EBE8 5px, #DDE3DF 5px, #DDE3DF 10px)" : color,
-                      color: appt.status === "blocked" ? "#5B6B62" : "#fff",
+                      background: appt.status === "blocked" ? "var(--blocked-fill, repeating-linear-gradient(45deg, #E7EBE8, #E7EBE8 5px, #DDE3DF 5px, #DDE3DF 10px))" : color,
+                      color: appt.status === "blocked" ? "var(--blocked-ink, #5B6B62)" : "#fff",
                       border: "none", borderRadius: 6, padding: "3px 5px", cursor: "pointer",
                       textAlign: "left", overflow: "hidden", opacity: dim ? 0.5 : 1,
                       textDecoration: appt.status === "cancelled" ? "line-through" : "none",
@@ -6798,12 +6803,12 @@ function AppointmentModal({
           <Field label={`Services${summary.durationMin ? ` · ${summary.durationMin} min · ${INR(summary.price)}` : ""}`}>
             <div style={{ maxHeight: 170, overflowY: "auto", border: "1px solid #DDE5DF", borderRadius: 9, padding: 6 }}>
               {live.length === 0 ? (
-                <div style={{ fontSize: 12.5, color: "#8A9C90", padding: 4 }}>No services on the menu yet.</div>
+                <div style={{ fontSize: 12.5, color: "var(--text-mid, #8A9C90)", padding: 4 }}>No services on the menu yet.</div>
               ) : live.map((s) => (
                 <label key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 2px", fontSize: 13, cursor: "pointer" }}>
                   <input type="checkbox" checked={draft.serviceIds.includes(s.id)} onChange={() => toggleService(s.id)} />
                   <span style={{ flex: 1 }}>{s.name}</span>
-                  <span style={{ color: "#8A9C90", fontSize: 12 }}>{s.durationMin}m</span>
+                  <span style={{ color: "var(--text-mid, #8A9C90)", fontSize: 12 }}>{s.durationMin}m</span>
                   <span style={{ fontWeight: 600, fontSize: 12 }}>{INR(s.price)}</span>
                 </label>
               ))}
@@ -6980,7 +6985,7 @@ function Reminders({ customers, setCustomers, sales, services, customerPackages,
             </button>
           ))}
         </div>
-        <label style={{ fontSize: 12.5, color: "#6B7E74", display: "flex", alignItems: "center", gap: 6 }}>
+        <label style={{ fontSize: 12.5, color: "var(--text-mid, #6B7E74)", display: "flex", alignItems: "center", gap: 6 }}>
           <input type="checkbox" checked={hideSent} onChange={(e) => setHideSent(e.target.checked)} />
           Hide anyone already contacted in the last 30 days
         </label>
@@ -6998,18 +7003,18 @@ function Reminders({ customers, setCustomers, sales, services, customerPackages,
                   <tr key={r.phone}>
                     <td>
                       <div style={{ fontWeight: 600 }}>{r.name || "(no name)"}</div>
-                      <div style={{ fontSize: 11.5, color: "#8A9C90" }}>{formatPhone(r.phone)}</div>
+                      <div style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)" }}>{formatPhone(r.phone)}</div>
                     </td>
                     <td style={{ fontSize: 12.5 }}>
                       <span style={{ fontWeight: 600 }}>{KIND_ICONS[r.kind]} {KIND_LABELS[r.kind]}</span>
-                      <div style={{ color: "#6B7E74" }}>{reasonText(r)}</div>
+                      <div style={{ color: "var(--text-mid, #6B7E74)" }}>{reasonText(r)}</div>
                       {r.alsoKinds.length > 0 && (
                         <div style={{ color: "#A8B8AE", fontSize: 11 }}>
                           also: {r.alsoKinds.map((k) => KIND_LABELS[k]).join(", ")}
                         </div>
                       )}
                     </td>
-                    <td style={{ fontSize: 12, color: r.sentAt ? "#6B7E74" : "#C3CFC7", whiteSpace: "nowrap" }}>
+                    <td style={{ fontSize: 12, color: r.sentAt ? "var(--text-mid, #6B7E74)" : "#C3CFC7", whiteSpace: "nowrap" }}>
                       {r.sentAt || "never"}
                     </td>
                     <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
@@ -7046,7 +7051,7 @@ function Reminders({ customers, setCustomers, sales, services, customerPackages,
               value={composing.text} onChange={(e) => setComposing((c) => ({ ...c, text: e.target.value }))}
             />
           </Field>
-          <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: -4, lineHeight: 1.6 }}>
+          <div style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)", marginTop: -4, lineHeight: 1.6 }}>
             Edit freely — this is what gets pre-filled in WhatsApp. You still press send there.
           </div>
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 14 }}>
@@ -7097,7 +7102,7 @@ function MessageTemplates({ templates, setTemplates, store, notify, log, onClose
 
   return (
     <Modal title="Message templates" onClose={onClose}>
-      <div style={{ fontSize: 12, color: "#6B7E74", lineHeight: 1.7, marginBottom: 12 }}>
+      <div style={{ fontSize: 12, color: "var(--text-mid, #6B7E74)", lineHeight: 1.7, marginBottom: 12 }}>
         Placeholders: <code>{"{name}"}</code> first name · <code>{"{service}"}</code> the service ·{" "}
         <code>{"{days}"}</code> days overdue / until expiry · <code>{"{shopName}"}</code> your salon.
         Anything else stays as literal text.
@@ -7110,7 +7115,7 @@ function MessageTemplates({ templates, setTemplates, store, notify, log, onClose
               <div key={t.id} style={{ marginBottom: 10 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
                   <span style={{ fontSize: 12, fontWeight: 600, color: "#465", flex: 1 }}>{t.name}</span>
-                  <label style={{ fontSize: 11.5, color: "#8A9C90", display: "flex", alignItems: "center", gap: 4 }}>
+                  <label style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)", display: "flex", alignItems: "center", gap: 4 }}>
                     <input type="checkbox" checked={t.active !== false} onChange={(e) => set(t.id, "active", e.target.checked)} />
                     Use this one
                   </label>
@@ -7201,7 +7206,7 @@ function CustomerForm({ value, onChange, isNew, err }) {
           />
         </Field>
       </div>
-      <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: -4, marginBottom: 8 }}>
+      <div style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)", marginTop: -4, marginBottom: 8 }}>
         Only the day and month are kept — the year isn't stored, and isn't needed to send a wish.
       </div>
       <Field label="Notes">
@@ -7356,7 +7361,7 @@ function Customers({ customers, sales, services, staff, customerPackages, config
           ))}
         </div>
         {segment !== "All" && (
-          <div style={{ fontSize: 12, color: "#6B7E74", marginBottom: 10 }}>{SEGMENT_HINTS[segment]}</div>
+          <div style={{ fontSize: 12, color: "var(--text-mid, #6B7E74)", marginBottom: 10 }}>{SEGMENT_HINTS[segment]}</div>
         )}
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <input className="input" style={{ flex: "1 1 220px" }} placeholder="Search by name or phone…" value={q} onChange={(e) => setQ(e.target.value)} />
@@ -7507,12 +7512,12 @@ function CustomerProfile({ customer, sales, staff, services, customerPackages = 
       </div>
 
       {rules.enabled && gap && (
-        <div style={{ fontSize: 12, color: "#6B7E74", marginBottom: 10 }}>
+        <div style={{ fontSize: 12, color: "var(--text-mid, #6B7E74)", marginBottom: 10 }}>
           {INR(spend12)} spent in the last 12 months · <b>{INR(gap.need)}</b> more to reach {gap.tier}.
         </div>
       )}
 
-      <div style={{ fontSize: 12.5, color: "#5E7468", lineHeight: 1.8, marginBottom: 12 }}>
+      <div style={{ fontSize: 12.5, color: "var(--text-mid, #5E7468)", lineHeight: 1.8, marginBottom: 12 }}>
         <div>☎ {formatPhone(customer.phone)}</div>
         {customer.dob && <div>🎂 Birthday · {customer.dob.replace("-", " / ")}</div>}
         {customer.anniversary && <div>💐 Anniversary · {customer.anniversary.replace("-", " / ")}</div>}
@@ -7529,7 +7534,7 @@ function CustomerProfile({ customer, sales, staff, services, customerPackages = 
                 <span>🎁 {cp.name}</span>
                 <span style={{ fontSize: 12.5 }}>
                   <b>{cp.usesLeft}</b> of {cp.totalUses} left ·{" "}
-                  <span style={{ color: left <= 14 ? "#C44536" : "#8A9C90", fontWeight: left <= 14 ? 700 : 400 }}>
+                  <span style={{ color: left <= 14 ? "#C44536" : "var(--text-mid, #8A9C90)", fontWeight: left <= 14 ? 700 : 400 }}>
                     {left <= 14 ? `expires in ${left}d` : `until ${cp.expiresAt}`}
                   </span>
                 </span>
@@ -7545,7 +7550,7 @@ function CustomerProfile({ customer, sales, staff, services, customerPackages = 
           {nextDue.slice(0, 5).map((d) => (
             <div key={d.name} style={S.row}>
               <span>{d.name}</span>
-              <span style={{ fontSize: 12.5, color: d.overdueBy > 0 ? "#C44536" : "#8A9C90", fontWeight: d.overdueBy > 0 ? 700 : 400 }}>
+              <span style={{ fontSize: 12.5, color: d.overdueBy > 0 ? "#C44536" : "var(--text-mid, #8A9C90)", fontWeight: d.overdueBy > 0 ? 700 : 400 }}>
                 {d.overdueBy > 0 ? `${d.overdueBy}d overdue` : d.overdueBy === 0 ? "due today" : `due ${d.due}`}
               </span>
             </div>
@@ -7587,12 +7592,12 @@ function CustomerProfile({ customer, sales, staff, services, customerPackages = 
                   <td style={{ whiteSpace: "nowrap" }}>{b.date}</td>
                   <td style={{ fontSize: 12.5 }}>
                     {(b.lines || []).map((l, i) => (
-                      <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, color: isServiceLine(l) ? "#334" : "#6B7E74" }}>
+                      <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, color: isServiceLine(l) ? "#334" : "var(--text-mid, #6B7E74)" }}>
                         {isServiceLine(l) && <ServiceIconChip icon={lineIcon(l)} size={20} />}
                         <span>
                           {l.name}
                           {l.qty > 1 ? ` ×${l.qty}` : ""}
-                          {isServiceLine(l) && l.staffId ? <span style={{ color: "#8A9C90" }}> · {staffName(staff, l.staffId)}</span> : null}
+                          {isServiceLine(l) && l.staffId ? <span style={{ color: "var(--text-mid, #8A9C90)" }}> · {staffName(staff, l.staffId)}</span> : null}
                         </span>
                       </div>
                     ))}
@@ -7707,7 +7712,7 @@ function Services({ services, setServices, items = [], notify, log }) {
             <option value="All">All categories</option>
             {SERVICE_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
-          <label style={{ fontSize: 12.5, color: "#6B7E74", display: "flex", alignItems: "center", gap: 6 }}>
+          <label style={{ fontSize: 12.5, color: "var(--text-mid, #6B7E74)", display: "flex", alignItems: "center", gap: 6 }}>
             <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
             Show inactive
           </label>
@@ -7720,7 +7725,7 @@ function Services({ services, setServices, items = [], notify, log }) {
         <section key={category} style={{ ...S.panel, marginBottom: 14 }}>
           <div style={{ ...S.panelHead, gap: 8 }}>
             <ServiceIconChip icon={CATEGORY_FALLBACK[category] || "defaultService"} size={26} />
-            {category} <span style={{ fontWeight: 400, color: "#8A9C90", marginLeft: 6 }}>· {list.length}</span>
+            {category} <span style={{ fontWeight: 400, color: "var(--text-mid, #8A9C90)", marginLeft: 6 }}>· {list.length}</span>
           </div>
           <div style={{ overflowX: "auto" }}>
             <table className="tbl" style={{ width: "100%" }}>
@@ -7737,7 +7742,7 @@ function Services({ services, setServices, items = [], notify, log }) {
                           {s.name}
                           {s.active === false && <span style={{ fontSize: 11, color: "#C44536" }}> · off menu</span>}
                           {serviceConsumables(s).length > 0 && (
-                            <span style={{ fontSize: 11, color: "#8A9C90" }}> · uses {serviceConsumables(s).length} product{serviceConsumables(s).length > 1 ? "s" : ""}</span>
+                            <span style={{ fontSize: 11, color: "var(--text-mid, #8A9C90)" }}> · uses {serviceConsumables(s).length} product{serviceConsumables(s).length > 1 ? "s" : ""}</span>
                           )}
                         </span>
                       </span>
@@ -7792,7 +7797,7 @@ function Services({ services, setServices, items = [], notify, log }) {
               <Field label="Rebooking cycle (days)">
                 <input className="input" inputMode="numeric" value={form.rebookCycleDays} onChange={(e) => set("rebookCycleDays", e.target.value)} />
               </Field>
-              <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: -4 }}>
+              <div style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)", marginTop: -4 }}>
                 How long until the customer is typically due again — this drives the Reminders queue.
                 Use <b>0</b> for one-off work like bridal makeup, which should never prompt a reminder.
               </div>
@@ -7809,7 +7814,7 @@ function Services({ services, setServices, items = [], notify, log }) {
               <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 700, fontSize: 13, color: "#334" }}>
                 <ServiceIconChip icon={resolveIcon(form)} size={30} />
                 Icon{" "}
-                <span style={{ fontWeight: 400, color: "#8A9C90" }}>
+                <span style={{ fontWeight: 400, color: "var(--text-mid, #8A9C90)" }}>
                   {isIconKey(form.icon) ? `· ${ICON_LABELS[form.icon]}, chosen by you` : "· automatic, from the name"}
                 </span>
               </div>
@@ -7846,14 +7851,14 @@ function Services({ services, setServices, items = [], notify, log }) {
           <div style={{ marginTop: 16, borderTop: "1px solid #E7EFEA", paddingTop: 12 }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6, gap: 8 }}>
               <div style={{ fontWeight: 700, fontSize: 13, color: "#334" }}>
-                Products used <span style={{ fontWeight: 400, color: "#8A9C90" }}>· from inventory (optional)</span>
+                Products used <span style={{ fontWeight: 400, color: "var(--text-mid, #8A9C90)" }}>· from inventory (optional)</span>
               </div>
               <button type="button" className="btn ghost" style={{ fontSize: 12 }} onClick={addConsumable} disabled={itemsSorted.length === 0}>+ Add product</button>
             </div>
             {itemsSorted.length === 0 ? (
-              <div style={{ fontSize: 12, color: "#8A9C90" }}>No products in inventory yet — add them under Inventory, then link them here.</div>
+              <div style={{ fontSize: 12, color: "var(--text-mid, #8A9C90)" }}>No products in inventory yet — add them under Inventory, then link them here.</div>
             ) : consumables.length === 0 ? (
-              <div style={{ fontSize: 12, color: "#8A9C90" }}>None yet. Add the products this service consumes and set how much of each it uses — fractions are fine (e.g. <b>0.25</b> of a bottle).</div>
+              <div style={{ fontSize: 12, color: "var(--text-mid, #8A9C90)" }}>None yet. Add the products this service consumes and set how much of each it uses — fractions are fine (e.g. <b>0.25</b> of a bottle).</div>
             ) : (
               <div style={{ display: "grid", gap: 8 }}>
                 {consumables.map((c, idx) => {
@@ -7867,7 +7872,7 @@ function Services({ services, setServices, items = [], notify, log }) {
                         {options.map((i) => <option key={i.id} value={i.id}>{i.name}{i.unit ? ` (${i.unit})` : ""}</option>)}
                       </select>
                       <input className="input" inputMode="decimal" style={{ width: 84, textAlign: "right" }} value={c.qty} onChange={(e) => setConsumable(idx, { qty: e.target.value })} aria-label="Quantity used per service" title="How much of this product one service uses" />
-                      <span style={{ fontSize: 12, color: "#8A9C90", minWidth: 30 }}>{item?.unit || ""}</span>
+                      <span style={{ fontSize: 12, color: "var(--text-mid, #8A9C90)", minWidth: 30 }}>{item?.unit || ""}</span>
                       <button type="button" className="btn ghost" style={{ fontSize: 12, color: "#B23B2E" }} onClick={() => removeConsumable(idx)} aria-label="Remove product">✕</button>
                     </div>
                   );
@@ -7937,7 +7942,7 @@ function StaffPayouts({ staff, sales, store }) {
     <div>
       <section style={{ ...S.panel, marginBottom: 14 }}>
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-          <label style={{ fontSize: 12.5, color: "#6B7E74" }}>
+          <label style={{ fontSize: 12.5, color: "var(--text-mid, #6B7E74)" }}>
             Month{" "}
             <input type="month" className="input" style={{ width: "auto", marginLeft: 4 }} value={month} max={todayStr().slice(0, 7)} onChange={(e) => setMonth(e.target.value || todayStr().slice(0, 7))} />
           </label>
@@ -7990,11 +7995,11 @@ function StaffPayouts({ staff, sales, store }) {
                                   <td>
                                     {r.service}{r.qty > 1 ? ` ×${r.qty}` : ""}
                                     {/* A ₹0 line looks like a mistake unless it says why. */}
-                                    {r.fromPackage && <span style={{ color: "#8A9C90", fontSize: 11 }}> · package</span>}
+                                    {r.fromPackage && <span style={{ color: "var(--text-mid, #8A9C90)", fontSize: 11 }}> · package</span>}
                                   </td>
-                                  <td style={{ color: "#6B7E74" }}>{r.customer || "Walk-in"}</td>
+                                  <td style={{ color: "var(--text-mid, #6B7E74)" }}>{r.customer || "Walk-in"}</td>
                                   <td style={{ textAlign: "right" }}>{INR(r.amount)}</td>
-                                  <td style={{ textAlign: "right", color: "#6B7E74" }}>{r.rate}%</td>
+                                  <td style={{ textAlign: "right", color: "var(--text-mid, #6B7E74)" }}>{r.rate}%</td>
                                   <td style={{ textAlign: "right", fontWeight: 600 }}>{INR(r.commission)}</td>
                                 </tr>
                               ))}
@@ -8008,7 +8013,7 @@ function StaffPayouts({ staff, sales, store }) {
               </tbody>
             </table>
           </div>
-          <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: 10, lineHeight: 1.6 }}>
+          <div style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)", marginTop: 10, lineHeight: 1.6 }}>
             Commission is worked out at the rate that applied <b>when each service was done</b>, so
             re-opening an old month always shows the same figures. It's calculated on the service
             amount before any whole-bill discount — a discount is the salon's decision, not the
@@ -8047,7 +8052,7 @@ function StaffPerformance({ staff, sales, appointments }) {
   return (
     <div>
       <section style={{ ...S.panel, marginBottom: 14 }}>
-        <label style={{ fontSize: 12.5, color: "#6B7E74" }}>
+        <label style={{ fontSize: 12.5, color: "var(--text-mid, #6B7E74)" }}>
           Period{" "}
           <select className="input" style={{ width: "auto", marginLeft: 4 }} value={months} onChange={(e) => setMonths(+e.target.value)}>
             <option value={1}>Last month</option>
@@ -8055,7 +8060,7 @@ function StaffPerformance({ staff, sales, appointments }) {
             <option value={6}>Last 6 months</option>
             <option value={12}>Last 12 months</option>
           </select>
-          <span style={{ marginLeft: 8, color: "#8A9C90" }}>{from} → {to}</span>
+          <span style={{ marginLeft: 8, color: "var(--text-mid, #8A9C90)" }}>{from} → {to}</span>
         </label>
       </section>
 
@@ -8098,7 +8103,7 @@ function StaffPerformance({ staff, sales, appointments }) {
       <section style={{ ...S.panel, marginTop: 16 }}>
         <div style={S.panelHead}>
           Busiest hours
-          <span style={{ fontWeight: 400, color: "#8A9C90" }}> · from the diary, not the till — when people were in the chair</span>
+          <span style={{ fontWeight: 400, color: "var(--text-mid, #8A9C90)" }}> · from the diary, not the till — when people were in the chair</span>
         </div>
         {heat.max === 0 ? (
           <Empty text="No appointments in this period yet." />
@@ -8108,20 +8113,20 @@ function StaffPerformance({ staff, sales, appointments }) {
               <thead>
                 <tr>
                   <th />
-                  {hours.map((h) => <th key={h} style={{ padding: "2px 4px", color: "#8A9C90", fontWeight: 600 }}>{hourLabel(h)}</th>)}
+                  {hours.map((h) => <th key={h} style={{ padding: "2px 4px", color: "var(--text-mid, #8A9C90)", fontWeight: 600 }}>{hourLabel(h)}</th>)}
                 </tr>
               </thead>
               <tbody>
                 {DOW_LABELS.map((d, i) => (
                   <tr key={d}>
-                    <td style={{ padding: "2px 6px 2px 0", color: "#5E7468", fontWeight: 700, whiteSpace: "nowrap" }}>{d}</td>
+                    <td style={{ padding: "2px 6px 2px 0", color: "var(--text-mid, #5E7468)", fontWeight: 700, whiteSpace: "nowrap" }}>{d}</td>
                     {hours.map((h) => {
                       const v = heat.grid[i][h];
                       // Opacity by intensity: a busy cell reads as busy without needing a legend.
                       const a = v ? 0.15 + 0.85 * (v / heat.max) : 0;
                       return (
                         <td key={h} title={`${d} ${hourLabel(h)} — ${v} appointment(s)`}
-                          style={{ padding: 0, width: 26, height: 22, background: v ? `rgba(27,94,67,${a})` : "#F4F7F4", border: "1px solid #fff", textAlign: "center", color: a > 0.55 ? "#fff" : "#5E7468", fontWeight: 600 }}>
+                          style={{ padding: 0, width: 26, height: 22, background: v ? `rgba(27,94,67,${a})` : "#F4F7F4", border: "1px solid #fff", textAlign: "center", color: a > 0.55 ? "#fff" : "var(--text-mid, #5E7468)", fontWeight: 600 }}>
                           {v || ""}
                         </td>
                       );
@@ -8236,7 +8241,7 @@ function Packages({ packages, setPackages, customerPackages, setCustomerPackages
       </div>
 
       <section style={{ ...S.panel, marginTop: 14, marginBottom: 14 }}>
-        <label style={{ fontSize: 12.5, color: "#6B7E74", display: "flex", alignItems: "center", gap: 6 }}>
+        <label style={{ fontSize: 12.5, color: "var(--text-mid, #6B7E74)", display: "flex", alignItems: "center", gap: 6 }}>
           <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
           Show packages no longer on sale
         </label>
@@ -8254,10 +8259,10 @@ function Packages({ packages, setPackages, customerPackages, setCustomerPackages
             return (
               <section key={p.id} style={{ ...S.panel, opacity: p.active === false ? 0.55 : 1 }}>
                 <div style={{ fontWeight: 800, fontSize: 15 }}>{p.name}</div>
-                <div style={{ fontSize: 12.5, color: "#5E7468", marginTop: 6, lineHeight: 1.7 }}>
-                  <div><b>{p.totalUses}</b> sessions · <b>{INR(p.price)}</b> <span style={{ color: "#8A9C90" }}>({INR(each)} each)</span></div>
+                <div style={{ fontSize: 12.5, color: "var(--text-mid, #5E7468)", marginTop: 6, lineHeight: 1.7 }}>
+                  <div><b>{p.totalUses}</b> sessions · <b>{INR(p.price)}</b> <span style={{ color: "var(--text-mid, #8A9C90)" }}>({INR(each)} each)</span></div>
                   <div>Valid {p.validityDays} days from purchase</div>
-                  <div style={{ color: "#8A9C90" }}>{covered.length ? covered.join(", ") : "⚠ no services attached"}</div>
+                  <div style={{ color: "var(--text-mid, #8A9C90)" }}>{covered.length ? covered.join(", ") : "⚠ no services attached"}</div>
                 </div>
                 <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
                   {p.active !== false && <button className="btn primary" style={{ fontSize: 12 }} onClick={() => { setSelling(p); setSellTo(""); }}>Sell</button>}
@@ -8313,12 +8318,12 @@ function Packages({ packages, setPackages, customerPackages, setCustomerPackages
                 <label key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 2px", fontSize: 13, cursor: "pointer" }}>
                   <input type="checkbox" checked={form.serviceIds.includes(s.id)} onChange={() => toggleService(s.id)} />
                   <span style={{ flex: 1 }}>{s.name}</span>
-                  <span style={{ color: "#8A9C90", fontSize: 12 }}>{INR(s.price)}</span>
+                  <span style={{ color: "var(--text-mid, #8A9C90)", fontSize: 12 }}>{INR(s.price)}</span>
                 </label>
               ))}
             </div>
           </Field>
-          <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: -4 }}>
+          <div style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)", marginTop: -4 }}>
             At billing, any of these services goes on the customer's bill at ₹0 and uses one session.
           </div>
           {err && <div style={{ color: "#B23B2E", fontSize: 12.5, marginTop: 10 }}>{err}</div>}
@@ -8331,7 +8336,7 @@ function Packages({ packages, setPackages, customerPackages, setCustomerPackages
 
       {selling && (
         <Modal title={`Sell “${selling.name}”`} onClose={() => setSelling(null)}>
-          <div style={{ fontSize: 13, color: "#5E7468", marginBottom: 10, lineHeight: 1.6 }}>
+          <div style={{ fontSize: 13, color: "var(--text-mid, #5E7468)", marginBottom: 10, lineHeight: 1.6 }}>
             {selling.totalUses} sessions · <b>{INR(selling.price)}</b> · valid {selling.validityDays} days.
             This records a <b>{INR(selling.price)}</b> bill today and gives the customer their sessions.
           </div>
@@ -8410,7 +8415,7 @@ function Staff({ staff, setStaff, sales, appointments, store, notify, log }) {
 
       {tab === "team" && <>
       <section style={{ ...S.panel, marginBottom: 14 }}>
-        <label style={{ fontSize: 12.5, color: "#6B7E74", display: "flex", alignItems: "center", gap: 6 }}>
+        <label style={{ fontSize: 12.5, color: "var(--text-mid, #6B7E74)", display: "flex", alignItems: "center", gap: 6 }}>
           <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
           Show people who no longer work here
         </label>
@@ -8430,10 +8435,10 @@ function Staff({ staff, setStaff, sales, appointments, store, notify, log }) {
                 </span>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontWeight: 700, fontSize: 14.5 }}>{s.name}</div>
-                  <div style={{ fontSize: 12, color: "#6B7E74" }}>{s.role || "—"}</div>
+                  <div style={{ fontSize: 12, color: "var(--text-mid, #6B7E74)" }}>{s.role || "—"}</div>
                 </div>
               </div>
-              <div style={{ fontSize: 12.5, color: "#5E7468", marginTop: 10, lineHeight: 1.7 }}>
+              <div style={{ fontSize: 12.5, color: "var(--text-mid, #5E7468)", marginTop: 10, lineHeight: 1.7 }}>
                 <div>Default commission · <b>{s.commissionPctDefault}%</b></div>
                 {s.phone && <div>☎ {formatPhone(s.phone)}</div>}
                 {s.active === false && <div style={{ color: "#C44536", fontWeight: 600 }}>No longer working here</div>}
@@ -8460,7 +8465,7 @@ function Staff({ staff, setStaff, sales, appointments, store, notify, log }) {
           <Field label="Default commission %">
             <input className="input" inputMode="decimal" value={form.commissionPctDefault} onChange={(e) => set("commissionPctDefault", e.target.value)} />
           </Field>
-          <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: -6, marginBottom: 10 }}>
+          <div style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)", marginTop: -6, marginBottom: 10 }}>
             Used when a service doesn't set its own commission rate.
           </div>
           <Field label="Colour on the appointment grid">
@@ -8595,7 +8600,7 @@ function Users({ user, notify, log }) {
         {!adding && <button className="btn primary" onClick={() => { setAdding(true); setErr(""); }}>+ Add user</button>}
       </div>
 
-      <div style={{ fontSize: 12, color: "#6B7E74", lineHeight: 1.6, marginBottom: 12 }}>
+      <div style={{ fontSize: 12, color: "var(--text-mid, #6B7E74)", lineHeight: 1.6, marginBottom: 12 }}>
         {ROLES.map((r) => (
           <div key={r}>
             <b style={{ color: "#334" }}>{ROLE_LABELS[r]}</b> — {ROLE_DESCRIPTIONS[r]}
@@ -8617,7 +8622,7 @@ function Users({ user, notify, log }) {
               </select>
             </Field>
           </div>
-          <div style={{ fontSize: 11.5, color: "#8A9C90", marginBottom: 8 }}>
+          <div style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)", marginBottom: 8 }}>
             Share the password with them and ask them to change it from the sign-in screen's “Forgot password” link.
           </div>
           {err && <div style={{ color: "#B23B2E", fontSize: 12.5, marginBottom: 8 }}>{err}</div>}
@@ -8631,7 +8636,7 @@ function Users({ user, notify, log }) {
       {!adding && err && <div style={{ color: "#B23B2E", fontSize: 12.5, marginBottom: 8 }}>{err}</div>}
 
       {users === null ? (
-        <div style={{ color: "#8A9C90", fontSize: 13 }}>Loading users…</div>
+        <div style={{ color: "var(--text-mid, #8A9C90)", fontSize: 13 }}>Loading users…</div>
       ) : rows.length === 0 ? (
         <Empty text="No users yet." />
       ) : (
@@ -8648,7 +8653,7 @@ function Users({ user, notify, log }) {
                   <tr key={uid} style={inactive ? { opacity: 0.55 } : undefined}>
                     <td>
                       {u.email}
-                      {isMe && <span style={{ fontSize: 11, color: "#8A9C90" }}> (you)</span>}
+                      {isMe && <span style={{ fontSize: 11, color: "var(--text-mid, #8A9C90)" }}> (you)</span>}
                     </td>
                     <td>{u.name || <span style={{ color: "#A8B8AE" }}>—</span>}</td>
                     <td>
@@ -8675,7 +8680,7 @@ function Users({ user, notify, log }) {
         </div>
       )}
 
-      <div style={{ fontSize: 11.5, color: "#8A9C90", marginTop: 10, lineHeight: 1.6 }}>
+      <div style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)", marginTop: 10, lineHeight: 1.6 }}>
         Deactivating keeps the person's history intact and blocks them at the database, not just in
         the app. Removing an account entirely is a Firebase console job — deactivating is almost
         always what you want.
@@ -8778,12 +8783,12 @@ function Admin({ setItems, setSales, setExpenses, setLogs, sales, customers, set
       <Header title="Admin" sub="Bulk & destructive operations · double-confirm + password required" />
       {groups.map((grp) => (
         <section key={grp} style={{ ...S.panel, marginBottom: 16 }}>
-          <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".06em", color: grp === "Danger zone" ? "#B23B2E" : "#6B7E74", marginBottom: 6 }}>{grp}</div>
+          <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".06em", color: grp === "Danger zone" ? "#B23B2E" : "var(--text-mid, #6B7E74)", marginBottom: 6 }}>{grp}</div>
           {ops.filter((o) => o.group === grp).map((op) => (
             <div key={op.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, padding: "10px 0", borderTop: "1px solid #EAF0EA" }}>
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontWeight: 700, color: op.danger ? "#B23B2E" : "var(--ink)" }}>{op.label}</div>
-                <div style={{ fontSize: 12.5, color: "#5E7468" }}>{op.desc}</div>
+                <div style={{ fontSize: 12.5, color: "var(--text-mid, #5E7468)" }}>{op.desc}</div>
               </div>
               <button
                 className="btn"
@@ -8803,8 +8808,8 @@ function Admin({ setItems, setSales, setExpenses, setLogs, sales, customers, set
           {step === 1 ? (
             <>
               <p style={{ marginTop: 0, fontWeight: 700, color: pending.danger ? "#B23B2E" : "var(--ink)" }}>{pending.label}</p>
-              <p style={{ color: "#5E7468", fontSize: 13 }}>{pending.desc}</p>
-              <p style={{ color: pending.danger ? "#B23B2E" : "#5E7468", fontSize: 13 }}>
+              <p style={{ color: "var(--text-mid, #5E7468)", fontSize: 13 }}>{pending.desc}</p>
+              <p style={{ color: pending.danger ? "#B23B2E" : "var(--text-mid, #5E7468)", fontSize: 13 }}>
                 This applies to all signed-in devices and may not be reversible. Continue?
               </p>
               <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 14 }}>
@@ -8814,7 +8819,7 @@ function Admin({ setItems, setSales, setExpenses, setLogs, sales, customers, set
             </>
           ) : (
             <>
-              <p style={{ marginTop: 0, fontSize: 13, color: "#5E7468" }}>
+              <p style={{ marginTop: 0, fontSize: 13, color: "var(--text-mid, #5E7468)" }}>
                 Final step. Enter the password for <b>{user?.email}</b> to run <b>{pending.label}</b>.
               </p>
               <input
@@ -8840,7 +8845,7 @@ const Header = ({ title, sub, children }) => (
   <div style={{ display: "flex", alignItems: "flex-end", marginBottom: 18, gap: 12 }}>
     <div>
       <h1 style={{ margin: 0, fontSize: 24, letterSpacing: "-0.03em" }}>{title}</h1>
-      {sub && <div style={{ color: "#6B7E74", fontSize: 13, marginTop: 2 }}>{sub}</div>}
+      {sub && <div style={{ color: "var(--text-mid, #6B7E74)", fontSize: 13, marginTop: 2 }}>{sub}</div>}
     </div>
     <div style={{ marginLeft: "auto" }}>{children}</div>
   </div>
@@ -8850,7 +8855,7 @@ const Card = ({ label, value, sub, accent }) => (
   <div style={{ ...S.card, ...(accent ? { background: "var(--brand)", color: "#fff" } : {}) }}>
     <div style={{ fontSize: 11.5, textTransform: "uppercase", letterSpacing: "0.07em", color: accent ? "#A8CDBA" : "#7A8C81" }}>{label}</div>
     <div style={{ fontSize: 24, fontWeight: 800, margin: "6px 0 2px", fontVariantNumeric: "tabular-nums" }}>{value}</div>
-    <div style={{ fontSize: 12, color: accent ? "#C8E2D4" : "#8A9C90" }}>{sub}</div>
+    <div style={{ fontSize: 12, color: accent ? "#C8E2D4" : "var(--text-mid, #8A9C90)" }}>{sub}</div>
   </div>
 );
 
@@ -8899,15 +8904,15 @@ function Modal({ title, children, onClose }) {
 // ---------- styles ----------
 const S = {
   app: { display: "flex", minHeight: "100vh", background: "var(--bg-base, var(--app-bg))", backgroundImage: "var(--bg-gradient, none)", backgroundAttachment: "fixed", fontFamily: "'Segoe UI', system-ui, -apple-system, sans-serif", color: "var(--text-hi, #1E2421)" },
-  nav: { width: 210, background: "var(--ink)", color: "var(--nav-hi)", display: "flex", flexDirection: "column", gap: 4, padding: "16px 10px", position: "sticky", top: 0, height: "100vh", boxSizing: "border-box", overflowY: "auto", overflowX: "hidden" },
+  nav: { width: 210, background: "var(--nav-bg, var(--ink))", color: "var(--nav-hi)", display: "flex", flexDirection: "column", gap: 4, padding: "16px 10px", position: "sticky", top: 0, height: "100vh", boxSizing: "border-box", overflowY: "auto", overflowX: "hidden" },
   logo: { display: "flex", gap: 10, alignItems: "center", padding: "4px 8px 18px" },
   logoMark: { width: 38, height: 38, borderRadius: 10, background: "#E8A33D", color: "var(--ink)", display: "grid", placeItems: "center", fontWeight: 800, fontSize: 17 },
   main: { flex: 1, padding: "26px 30px", maxWidth: 1280, margin: "0 auto", width: "100%", boxSizing: "border-box" },
   cards: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 },
   card: { background: "var(--surface, #fff)", borderRadius: 14, padding: "16px 18px", border: "1px solid var(--border, #E2EAE3)" },
   panel: { background: "var(--surface, #fff)", borderRadius: 14, padding: 16, border: "1px solid var(--border, #E2EAE3)" },
-  panelHead: { fontWeight: 800, fontSize: 13.5, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--panelhead, #3A5547)", display: "flex", alignItems: "center", marginBottom: 10 },
-  row: { display: "flex", justifyContent: "space-between", padding: "8px 2px", borderBottom: "1px dashed #E5ECE6", fontSize: 13.5 },
+  panelHead: { fontWeight: 800, fontSize: 13.5, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--panelhead, #3A5547)", fontFamily: "var(--font-display, inherit)", display: "flex", alignItems: "center", marginBottom: 10 },
+  row: { display: "flex", justifyContent: "space-between", padding: "8px 2px", borderBottom: "1px dashed var(--row-line, #E5ECE6)", fontSize: 13.5 },
   receipt: { background: "#FFFDF6", borderRadius: 4, padding: "18px 16px", border: "1px solid #E8E2CF", boxShadow: "0 2px 10px rgba(40,60,40,.07)", alignSelf: "start", backgroundImage: "repeating-linear-gradient(transparent, transparent 27px, rgba(180,170,140,.12) 28px)" },
   receiptHead: { textAlign: "center", fontWeight: 800, letterSpacing: "0.25em", fontSize: 12, color: "#6B6347", borderBottom: "2px dashed #D8D0B8", paddingBottom: 10, marginBottom: 8 },
   rcptLine: { display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: "1px dotted #E0D9C4" },
@@ -8921,8 +8926,8 @@ const S = {
   connBadge: { position: "fixed", bottom: 18, right: 16, zIndex: 90, display: "inline-flex", alignItems: "center", gap: 8, padding: "8px 14px", borderRadius: 999, fontSize: 13, fontWeight: 800, letterSpacing: ".02em", boxShadow: "0 4px 14px rgba(0,0,0,.22)", border: "2px solid", userSelect: "none" },
   connOn: { background: "#DCFCE7", color: "#0F7A43", borderColor: "#7FDDA8" },
   connOff: { background: "#B3261E", color: "#fff", borderColor: "#fff" },
-  overlay: { position: "fixed", inset: 0, background: "rgba(15,30,20,.45)", display: "grid", placeItems: "center", zIndex: 50 },
-  modal: { background: "#fff", borderRadius: 16, padding: 20, width: "min(480px, 92vw)", maxHeight: "86vh", overflow: "auto" },
+  overlay: { position: "fixed", inset: 0, background: "var(--overlay-bg, rgba(15,30,20,.45))", backdropFilter: "var(--scrim-blur, none)", WebkitBackdropFilter: "var(--scrim-blur, none)", display: "grid", placeItems: "center", zIndex: 50 },
+  modal: { background: "var(--modal-bg, #fff)", borderRadius: 16, padding: 20, width: "min(480px, 92vw)", maxHeight: "86vh", overflow: "auto", backdropFilter: "var(--modal-blur, none)", WebkitBackdropFilter: "var(--modal-blur, none)", boxShadow: "var(--glass-shadow, none)" },
 };
 
 const CSS = `
@@ -8934,6 +8939,54 @@ const CSS = `
     --nav-line:#2f5c44; --nav-text:#bcd2c4; --nav-text-dim:#a8c2b4; --nav-hi:#e9f2ec;
     --brand:#1b5e43; --brand-soft:#e4ece5; --brand-soft-text:#23402f;
     --app-bg:#eff3ee; --focus-ring:rgba(27,94,67,.18);
+  }
+  /* ── Advanced theme (the "Advanced ✨" appearance) ───────────────────────────────────────
+     ONE synced whole-app skin, chosen by the owner (config.iconStyle === "advanced"; the
+     attribute sits on the .app root — see the render). A dark glass-morphism layer that lays
+     OVER whichever of the six colour palettes is active: it defines only its OWN tokens and
+     never --brand/--ink/etc, because themeVars() sets those inline on .app and inline always
+     beats a stylesheet — so the colour theme still tints the accents showing through the glass.
+     Basic (data-theme="basic") defines none of these, so every var(--token, <original>) across
+     the S.* styles and the class rules falls back to the original light value → pixel-identical. */
+  [data-theme="advanced"] {
+    color-scheme: dark;
+    --bg-base:#17111D;
+    --bg-gradient:
+      radial-gradient(115% 105% at 12% 8%, #2A1B33 0%, rgba(42,27,51,0) 46%),
+      radial-gradient(120% 110% at 88% 94%, #102224 0%, rgba(16,34,36,0) 50%);
+    --glass-blur:14px;
+    --scrim-blur:blur(12px);
+    --modal-blur:blur(8px);
+    --glass-hi:rgba(255,255,255,.08);
+    --glass-fill:rgba(255,255,255,.06);
+    --glass-border:rgba(255,255,255,.14);
+    --glass-shadow:0 8px 30px rgba(0,0,0,.35), inset 0 1px 0 var(--glass-hi);
+    --accent:#D4A85A; --accent-2:#C98A9E; --accent-teal:#8FB9A8; --accent-plum:#B99BD8;
+    --text-hi:#F2EDE6; --text-mid:#B9AFA6; --text-low:#968C7E;
+    --danger:#E4707A; --success:#7BC49A; --warn:#E0B15E;
+    --font-display:'Cormorant Garamond','Hoefler Text',Georgia,'Times New Roman',serif;
+    /* Surfaces — consumed by the inline S.* styles and the .btn/.input/.pick/.qty/.tbl rules. */
+    --surface:rgba(255,255,255,.06);
+    --border:rgba(255,255,255,.14);
+    --panelhead:#CDBF9A;
+    --nav-bg:rgba(23,17,29,.72);
+    --row-line:rgba(255,255,255,.10);
+    --overlay-bg:rgba(8,5,12,.62);
+    --modal-bg:rgba(34,27,42,.88);
+    --input-bg:rgba(255,255,255,.05); --input-border:rgba(255,255,255,.16); --input-focus:var(--accent);
+    --focus-ring-width:2px;
+    --btn-bg:rgba(255,255,255,.08); --btn-fg:var(--text-hi);
+    --btn-primary-bg:var(--accent); --btn-primary-fg:#241B10;
+    --btn-ghost-bg:transparent; --btn-ghost-border:rgba(255,255,255,.22);
+    --btn-danger-bg:rgba(228,112,122,.16); --btn-danger-fg:#F0A6AC;
+    --pick-bg:rgba(255,255,255,.05); --pick-border:rgba(255,255,255,.14);
+    --pick-hover-border:var(--accent); --pick-hover-bg:rgba(255,255,255,.09);
+    --pick-disabled-bg:rgba(255,255,255,.03);
+    --qty-border:rgba(255,255,255,.20); --qty-bg:rgba(255,255,255,.05);
+    --tbl-th:#B9AFA6; --tbl-head-line:rgba(255,255,255,.16);
+    --tbl-line:rgba(255,255,255,.08); --tbl-row-hover:rgba(255,255,255,.05);
+    --blocked-fill:repeating-linear-gradient(45deg, rgba(255,255,255,.04), rgba(255,255,255,.04) 5px, rgba(255,255,255,.10) 5px, rgba(255,255,255,.10) 10px);
+    --blocked-ink:var(--text-mid);
   }
   .navbtn { display:flex; align-items:center; gap:6px; width:100%; text-align:left; background:none; border:none; color:var(--nav-text); padding:10px 12px; border-radius:9px; font-size:13.5px; font-weight:600; cursor:pointer; position:relative; }
   .navbtn:hover { background:var(--nav-hover); color:#fff; }
@@ -8947,23 +9000,67 @@ const CSS = `
   /* Offline status pill pulses so a lost connection is impossible to miss. */
   @keyframes connpulse { 0%,100% { box-shadow:0 4px 14px rgba(0,0,0,.22), 0 0 0 0 rgba(179,38,30,.55); } 50% { box-shadow:0 4px 14px rgba(0,0,0,.22), 0 0 0 9px rgba(179,38,30,0); } }
   .connbadge-off { animation:connpulse 1.4s ease-in-out infinite; }
-  .input { width:100%; box-sizing:border-box; padding:10px 12px; border:1.5px solid #D5E0D6; border-radius:9px; font-size:14px; background:#fff; outline:none; font-family:inherit; }
-  .input:focus { border-color:var(--brand); box-shadow:0 0 0 3px var(--focus-ring); }
-  .btn { border:none; border-radius:9px; padding:9px 16px; font-size:13.5px; font-weight:700; cursor:pointer; background:var(--brand-soft); color:var(--brand-soft-text); font-family:inherit; }
+  .input { width:100%; box-sizing:border-box; padding:10px 12px; border:1.5px solid var(--input-border, #D5E0D6); border-radius:9px; font-size:14px; background:var(--input-bg, #fff); outline:none; font-family:inherit; }
+  .input:focus { border-color:var(--input-focus, var(--brand)); box-shadow:0 0 0 var(--focus-ring-width, 3px) var(--focus-ring); }
+  .btn { border:none; border-radius:9px; padding:9px 16px; font-size:13.5px; font-weight:700; cursor:pointer; background:var(--btn-bg, var(--brand-soft)); color:var(--btn-fg, var(--brand-soft-text)); font-family:inherit; }
   .btn:hover { filter:brightness(.96); }
-  .btn.primary { background:var(--brand); color:#fff; }
+  .btn.primary { background:var(--btn-primary-bg, var(--brand)); color:var(--btn-primary-fg, #fff); }
   .btn.big { padding:13px 18px; font-size:15px; }
-  .btn.ghost { background:transparent; border:1.5px solid #CFDCD1; }
+  .btn.ghost { background:var(--btn-ghost-bg, transparent); border:1.5px solid var(--btn-ghost-border, #CFDCD1); }
   .btn.small { padding:5px 10px; font-size:12px; }
-  .btn.danger { background:#FBEAE7; color:#C44536; }
-  .pick { text-align:left; background:#F6FAF6; border:1.5px solid #DDE8DE; border-radius:11px; padding:10px 12px; cursor:pointer; font-family:inherit; }
-  .pick:hover:not(:disabled) { border-color:var(--brand); background:#fff; }
-  .pick:disabled { opacity:.7; cursor:not-allowed; background:#F0F2F0; }
-  .qty { width:26px; height:26px; border-radius:7px; border:1.5px solid #D0C7AB; background:#fff; font-size:15px; font-weight:700; cursor:pointer; line-height:1; }
+  .btn.danger { background:var(--btn-danger-bg, #FBEAE7); color:var(--btn-danger-fg, #C44536); }
+  .pick { text-align:left; background:var(--pick-bg, #F6FAF6); border:1.5px solid var(--pick-border, #DDE8DE); border-radius:11px; padding:10px 12px; cursor:pointer; font-family:inherit; }
+  .pick:hover:not(:disabled) { border-color:var(--pick-hover-border, var(--brand)); background:var(--pick-hover-bg, #fff); }
+  .pick:disabled { opacity:.7; cursor:not-allowed; background:var(--pick-disabled-bg, #F0F2F0); }
+  .qty { width:26px; height:26px; border-radius:7px; border:1.5px solid var(--qty-border, #D0C7AB); background:var(--qty-bg, #fff); font-size:15px; font-weight:700; cursor:pointer; line-height:1; }
   .tbl { width:100%; border-collapse:collapse; font-size:13.5px; }
-  .tbl th { text-align:left; font-size:11.5px; text-transform:uppercase; letter-spacing:.05em; color:#7A8C81; padding:6px 8px; border-bottom:2px solid #E2EAE3; }
-  .tbl td { padding:9px 8px; border-bottom:1px solid #EEF3EE; }
-  .tbl tr:hover td { background:#F7FAF7; }
+  .tbl th { text-align:left; font-size:11.5px; text-transform:uppercase; letter-spacing:.05em; color:var(--tbl-th, #7A8C81); padding:6px 8px; border-bottom:2px solid var(--tbl-head-line, #E2EAE3); }
+  .tbl td { padding:9px 8px; border-bottom:1px solid var(--tbl-line, #EEF3EE); }
+  .tbl tr:hover td { background:var(--tbl-row-hover, #F7FAF7); }
+  /* ── Advanced theme: surface treatments ─────────────────────────────────────────────────
+     What tokens can't express — backdrop-blur, ::placeholder, chart internals, hover accents.
+     All scoped to [data-theme="advanced"], so Basic is untouched. Backdrop-blur lives ONLY on
+     surfaces that sit still (the sidebar, and the modal scrim via S.overlay) — never on cards,
+     which scroll: those tint through --surface instead. See the blur budget in CLAUDE.md. */
+  [data-theme="advanced"] .nav { backdrop-filter:blur(var(--glass-blur)); -webkit-backdrop-filter:blur(var(--glass-blur)); border-right:1px solid var(--glass-border); }
+  [data-theme="advanced"] .navbtn.util { background:rgba(255,255,255,.06); border-color:var(--glass-border); color:var(--text-hi); }
+  [data-theme="advanced"] .navbtn.util:hover { background:rgba(255,255,255,.12); border-color:var(--accent); color:#fff; }
+  [data-theme="advanced"] .input { color:var(--text-hi); }
+  [data-theme="advanced"] .input::placeholder { color:var(--text-low); }
+  [data-theme="advanced"] .btn.ghost:hover, [data-theme="advanced"] .pick:hover:not(:disabled) { border-color:var(--accent); }
+  [data-theme="advanced"] .btn.primary:hover { filter:brightness(1.06); }
+  [data-theme="advanced"] .qty:hover { border-color:var(--accent); }
+  /* Charts: lift only the near-black green series so it reads on the dark ground, calm the grid,
+     and make axis ticks / legend / tooltip legible. Series are matched by their literal fill/stroke
+     (case-insensitive) so the categorical palette keeps every other distinction intact. */
+  [data-theme="advanced"] [fill="#1b5e43" i] { fill:#63B78E; }
+  [data-theme="advanced"] [stroke="#1b5e43" i] { stroke:#63B78E; }
+  [data-theme="advanced"] [stroke="#10331f" i] { stroke:rgba(255,255,255,.25); }
+  [data-theme="advanced"] [stroke="#eef3ee" i] { stroke:rgba(255,255,255,.09); }
+  [data-theme="advanced"] .recharts-cartesian-axis-tick-value, [data-theme="advanced"] .recharts-text { fill:var(--text-mid); }
+  [data-theme="advanced"] .recharts-cartesian-axis-line, [data-theme="advanced"] .recharts-cartesian-axis-tick-line { stroke:var(--glass-border); }
+  [data-theme="advanced"] .recharts-legend-item-text { color:var(--text-mid) !important; }
+  [data-theme="advanced"] .recharts-default-tooltip { background:rgba(30,23,38,.95) !important; border:1px solid var(--glass-border) !important; border-radius:10px; }
+  [data-theme="advanced"] .recharts-tooltip-item, [data-theme="advanced"] .recharts-tooltip-label { color:var(--text-hi) !important; }
+  /* Blur budget fallback: where backdrop-filter is unsupported, fall back to an opaque-enough
+     panel so the sidebar never turns into unreadable see-through text. */
+  @supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))) {
+    [data-theme="advanced"] .nav { background:#1b1522; }
+  }
+  /* Reduced motion: the offline pill's pulse is the only looping animation — stop it. */
+  @media (prefers-reduced-motion: reduce) {
+    .connbadge-off { animation:none; }
+    * { scroll-behavior:auto; }
+  }
+  /* Print: a receipt is thermal paper, not a theme. Force plain black-on-white and drop every
+     gradient, glass and display face, whichever appearance is active on screen. */
+  @media print {
+    [data-theme] { --bg-base:#fff; --bg-gradient:none; --surface:#fff; --border:#000; --text-hi:#000;
+      --text-mid:#000; --panelhead:#000; --nav-bg:#fff; --modal-bg:#fff; --font-display:inherit; }
+    [data-theme] .nav { display:none !important; }
+    [data-theme] * { backdrop-filter:none !important; -webkit-backdrop-filter:none !important;
+      background-image:none !important; box-shadow:none !important; color:#000 !important; }
+  }
   @media (max-width: 820px) {
     .app { flex-direction:column !important; }
     .nav { width:auto !important; height:auto !important; position:static !important;

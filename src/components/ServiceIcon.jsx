@@ -236,14 +236,11 @@ export function ServiceIconDefs() {
  * blur budget is spent on surfaces that sit still.
  */
 export const SERVICE_ICON_CSS = `
-  /* Glass theme tokens. --accent/--accent-2 are the gold→rose pair the hair family strokes with;
-     teal and plum carry the spa and nail families. */
-  [data-theme="advanced"] {
-    --accent:#C9962E; --accent-2:#DE6E92; --accent-teal:#2C9E97; --accent-plum:#8B5CF6;
-    --glass-fill:linear-gradient(150deg, #ffffff 0%, var(--brand-soft) 100%);
-    --glass-border:rgba(90,110,100,.20);
-    --glass-shadow:0 1px 2px rgba(20,45,32,.10), inset 0 1px 0 rgba(255,255,255,.85);
-  }
+  /* The glass palette tokens (--accent/--accent-2/--accent-teal/--accent-plum, and
+     --glass-fill/--glass-border/--glass-shadow) are defined by the app's Advanced-theme block in
+     salon-manager.jsx — the whole-app skin owns them, and the chip just consumes them so it reads
+     as part of the same glass. Basic keeps its own flat values here, so a flat chip needs no theme
+     block of its own. */
   [data-theme="basic"] {
     --glass-fill:#F6FAF6;
     --glass-border:#DDE8DE;
@@ -259,7 +256,7 @@ export const SERVICE_ICON_CSS = `
   /* The inset top highlight that makes the chip read as glass rather than as a grey square. */
   [data-theme="advanced"] .svc-chip::before {
     content:""; position:absolute; left:0; right:0; top:0; height:48%;
-    background:linear-gradient(rgba(255,255,255,.9), rgba(255,255,255,0));
+    background:linear-gradient(var(--glass-hi, rgba(255,255,255,.9)), rgba(255,255,255,0));
     pointer-events:none;
   }
   .svc-icon { display:block; position:relative; }

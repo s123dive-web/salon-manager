@@ -11,6 +11,7 @@ import { describe, it, expect, vi, beforeAll } from "vitest";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { ICON_KEYS, ICON_LABELS } from "./lib/serviceIcons.js";
+import { SERVICE_ICON_CSS } from "./components/ServiceIcon.jsx";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -185,37 +186,40 @@ describe("service icons — real app, end to end", () => {
     a.unmount();
   });
 
-  it("flips the whole app between the glass and flat themes", async () => {
+  it("flips the whole app between the Advanced (glass) and Basic (flat) appearances", async () => {
     const a = await mountApp();
 
-    // Glass is the default: the shared gradient defs are mounted, once.
+    // Advanced is the default: the shared gradient defs are mounted, once.
     expect(a.app().getAttribute("data-theme")).toBe("advanced");
     expect(a.container.querySelectorAll("#si-grad-warm").length).toBe(1);
     expect(a.container.querySelectorAll("linearGradient").length).toBe(4);
 
     await a.goto(/Salon Settings/);
-    await a.click(a.byText(/^Flat/));
+    await a.click(a.byText(/^Basic/));
     await a.click(a.byText(/^Save settings$/));
 
     expect(a.app().getAttribute("data-theme")).toBe("basic");
-    // Flat theme asks for no gradients at all — nothing to load, nothing to paint.
+    // The flat appearance asks for no gradients at all — nothing to load, nothing to paint.
     expect(a.container.querySelectorAll("linearGradient").length).toBe(0);
     // …and the icons are still there, just flat.
     expect(a.icons().length).toBeGreaterThan(0);
 
-    await a.click(a.byText(/^Glass/));
+    await a.click(a.byText(/^Advanced/));
     await a.click(a.byText(/^Save settings$/));
     expect(a.app().getAttribute("data-theme")).toBe("advanced");
     expect(a.container.querySelectorAll("linearGradient").length).toBe(4);
     a.unmount();
   });
 
-  it("ships the icon stylesheet with the app, both themes and no blur", async () => {
+  it("ships the icon stylesheet with the app, both themes, and never blurs a chip", async () => {
     const a = await mountApp();
     const css = [...a.container.querySelectorAll("style")].map((s) => s.textContent).join("\n");
     expect(css).toContain('[data-theme="advanced"] .svc-chip::before'); // the glass highlight
     expect(css).toContain('[data-theme="basic"]');
-    expect(css).not.toContain("backdrop-filter");
     a.unmount();
+    // The blur budget (see CLAUDE.md): chips appear 80-at-a-time in scrolling lists, so the icon
+    // stylesheet itself never blurs. backdrop-filter is reserved for the still shell surfaces —
+    // the sidebar and the modal scrim — which live in the app's stylesheet, not this one.
+    expect(SERVICE_ICON_CSS).not.toContain("backdrop-filter");
   });
 });
