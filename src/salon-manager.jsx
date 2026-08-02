@@ -104,7 +104,7 @@ const escapeHtml = (s) =>
 // sub-path on GitHub Pages, so these resolve correctly in both. assetUrl() makes them
 // absolute for the print window (about:blank, which can't resolve relative paths).
 const BASE = import.meta.env.BASE_URL;
-const LOGO_SRC = BASE + "logo.jpg";
+const LOGO_SRC = BASE + "logo.svg";
 const PAYMENT_QR_SRC = BASE + "payment-qr.jpg";
 const assetUrl = (p) => (typeof location !== "undefined" ? location.origin : "") + p;
 
@@ -457,7 +457,7 @@ const STORE = {
   address: "",
   phone: "",
   pcIp: "",
-  logo: "",       // "" => default logo.jpg asset; otherwise a data URL
+  logo: "",       // "" => default logo.svg asset; otherwise a data URL
   paymentQr: "",  // "" => default payment-qr.jpg asset; otherwise a data URL
   upiId: "",      // UPI VPA (e.g. salon@okhdfcbank). Set => bills show an amount-encoded QR; "" => static image
   upiName: "",    // payee name shown in the customer's UPI app; "" => fall back to the salon name
