@@ -874,7 +874,14 @@ function StoreManager({ user, role, onLogout }) {
   const seeded = useRef({}); // slice → true once this device has written that slice's seed
   const configSynced = useRef(false);        // have we read shop/config from the cloud at least once?
   const lastConfig = useRef(JSON.stringify(readCachedConfig())); // last config JSON reconciled with the cloud (blocks echo writes)
-  const [online, setOnline] = useState(true);
+  // Seed from the browser's network status so the badge is right on the first paint; the RTDB
+  // .info/connected signal (subscribeConnection, below) then takes over as the authoritative
+  // "can I actually reach the cloud" answer that gates every write.
+  const [online, setOnline] = useState(navigator.onLine);
+  // The device blocks EVERY data write while offline (owner's choice): a change attempted with no
+  // connection is refused and this raises the loud "not saved — you're offline" modal, rather than
+  // being saved locally to sync later. See guardOnline / the guarded writers below.
+  const [offlineBlock, setOfflineBlock] = useState(false);
 
   // The one place that maps a slice name → its React setter. Everything below (cache, sync,
   // push) drives off this, so a new slice is wired in exactly one place.
@@ -895,6 +902,33 @@ function StoreManager({ user, role, onLogout }) {
   const dataRef = useRef({});
   dataRef.current = { items, sales, expenses, logs, vendorBills: bills, dailyBills, customers, services, staff, appointments, packages, customerPackages, messageTemplates };
   const notifyRef = useRef(null);
+
+  // ---- offline write-guard ----
+  // Mirror `online`/`offlineBlock` into refs so the guard and the toast can read them
+  // synchronously, before React re-renders. `online` is the RTDB .info/connected signal.
+  const onlineRef = useRef(true);
+  onlineRef.current = online;
+  const offlineBlockRef = useRef(false);
+  offlineBlockRef.current = offlineBlock;
+  // Refuse a write when offline: raise the modal and return false. Cloud reads and the local-cache
+  // restore keep using the RAW setters (SETTERS), so incoming data still applies — only the
+  // setters handed to the UI (the `writers` below) and the few direct callers go through this.
+  const guardOnline = useCallback(() => {
+    if (onlineRef.current) return true;
+    offlineBlockRef.current = true;
+    setOfflineBlock(true);
+    return false;
+  }, []);
+  const withOnline = useCallback((fn) => (arg) => { if (guardOnline()) fn(arg); }, [guardOnline]);
+  // Online-guarded versions of every data setter, handed to the views in place of the raw ones.
+  const writers = useMemo(() => ({
+    items: withOnline(setItems), sales: withOnline(setSales), expenses: withOnline(setExpenses),
+    logs: withOnline(setLogs), bills: withOnline(setBills), dailyBills: withOnline(setDailyBills),
+    customers: withOnline(setCustomers), services: withOnline(setServices), staff: withOnline(setStaff),
+    appointments: withOnline(setAppointments), packages: withOnline(setPackages),
+    customerPackages: withOnline(setCustomerPackages), messageTemplates: withOnline(setMessageTemplates),
+    config: withOnline(setConfig),
+  }), [withOnline]);
 
   // 1) Instant paint from the local cache. Only restores slices this role may read — otherwise
   //    a cache left behind by an owner on a shared counter device would show a worker the
@@ -1050,6 +1084,9 @@ function StoreManager({ user, role, onLogout }) {
 
   const toastTimer = useRef(null);
   const notify = (msg) => {
+    // While the offline-block modal is up, it IS the message — don't stack a toast (e.g. a
+    // handler's trailing "saved" line) behind it, which would contradict the "not saved" popup.
+    if (offlineBlockRef.current) return;
     if (toastTimer.current) clearTimeout(toastTimer.current); // don't let an old timer cut a new toast short
     setToast(msg);
     toastTimer.current = setTimeout(() => { setToast(null); toastTimer.current = null; }, 2200);
@@ -1068,6 +1105,7 @@ function StoreManager({ user, role, onLogout }) {
   // Prompt for and add a new category. Returns the canonical name to select (existing match if it's
   // a duplicate, the new name otherwise), or null if cancelled/blank. Used by the Add/Edit forms.
   const addCategory = useCallback(() => {
+    if (!guardOnline()) return null;
     const raw = window.prompt("New category name:");
     if (raw == null) return null;
     const name = raw.trim();
@@ -1077,7 +1115,7 @@ function StoreManager({ user, role, onLogout }) {
     setCustomCats((cs) => [...cs, name]);
     notifyRef.current?.(`Category “${name}” added.`);
     return name;
-  }, [customCats]);
+  }, [customCats, guardOnline]);
 
   const resetMyPassword = async () => {
     if (!user?.email) return;
@@ -1087,7 +1125,10 @@ function StoreManager({ user, role, onLogout }) {
   };
 
   // Append an entry to the global activity log (newest first; capped to protect storage).
+  // No-ops while offline: the log is a synced slice, and nothing is written on this device when
+  // there's no connection. A blocked action never reached its work, so it has nothing to log.
   const addLog = (type, message) => {
+    if (!onlineRef.current) return;
     const now = new Date();
     setLogs((l) =>
       [
@@ -1123,6 +1164,7 @@ function StoreManager({ user, role, onLogout }) {
     const f = e.target.files?.[0];
     e.target.value = ""; // allow re-importing the same file later
     if (!f) return;
+    if (!guardOnline()) return; // a restore rewrites the whole tree — never while offline
     try {
       const ext = (f.name.split(".").pop() || "").toLowerCase();
       const d = ext === "xlsx" || ext === "xls" ? await importXlsx(f) : JSON.parse(await f.text());
@@ -1247,29 +1289,32 @@ function StoreManager({ user, role, onLogout }) {
       goBilling={() => setTab("billing")} goAppointments={() => setTab("appointments")}
     />
   );
+  // Every setter handed to a view is the ONLINE-GUARDED version (writers.*), so any write the UI
+  // attempts while offline is refused and raises the offline modal. Reads stay live. Billing also
+  // gets guardOnline directly so it can refuse a sale up-front, before printing or clearing the cart.
   const VIEWS = {
     dashboard: () => dashboard,
-    appointments: () => guard("appointments.view", <Appointments appointments={appointments} setAppointments={setAppointments} customers={customers} setCustomers={setCustomers} services={services} staff={staff} config={config} notify={notify} log={addLog} role={role} onCompleteToBill={completeToBill} />),
-    billing: () => guard("billing.use", <Billing items={items} sales={sales} services={services} staff={staff} customers={customers} customerPackages={customerPackages} config={config} setItems={setItems} setSales={setSales} setCustomers={setCustomers} store={store} notify={notify} log={addLog} role={role} user={user} prefill={billPrefill} onPrefillUsed={() => setBillPrefill(null)} onBilled={linkBillToAppointment} />),
-    customers: () => guard("customers.browse", <Customers customers={customers} sales={sales} services={services} staff={staff} customerPackages={customerPackages} config={config} store={store} setCustomers={setCustomers} notify={notify} log={addLog} />),
-    reminders: () => guard("reminders.use", <Reminders customers={customers} setCustomers={setCustomers} sales={sales} services={services} customerPackages={customerPackages} messageTemplates={messageTemplates} setMessageTemplates={setMessageTemplates} store={store} notify={notify} log={addLog} />),
-    services: () => guard("services.manage", <Services services={services} setServices={setServices} items={items} notify={notify} log={addLog} />),
-    packages: () => guard("packages.manage", <Packages packages={packages} setPackages={setPackages} customerPackages={customerPackages} setCustomerPackages={setCustomerPackages} services={services} customers={customers} setCustomers={setCustomers} setSales={setSales} notify={notify} log={addLog} />),
-    staff: () => guard("staff.manage", <Staff staff={staff} setStaff={setStaff} sales={sales} appointments={appointments} store={store} notify={notify} log={addLog} />),
-    raw: () => guard("import.use", <RawData items={items} setItems={setItems} setSales={setSales} setExpenses={setExpenses} notify={notify} log={addLog} />),
-    inventory: () => guard("inventory.view", <Inventory items={items} setItems={setItems} notify={notify} log={addLog} cats={cats} onAddCategory={addCategory} role={role} />),
+    appointments: () => guard("appointments.view", <Appointments appointments={appointments} setAppointments={writers.appointments} customers={customers} setCustomers={writers.customers} services={services} staff={staff} config={config} notify={notify} log={addLog} role={role} onCompleteToBill={completeToBill} />),
+    billing: () => guard("billing.use", <Billing items={items} sales={sales} services={services} staff={staff} customers={customers} customerPackages={customerPackages} config={config} setItems={writers.items} setSales={writers.sales} setCustomers={writers.customers} store={store} notify={notify} log={addLog} role={role} user={user} guardOnline={guardOnline} prefill={billPrefill} onPrefillUsed={() => setBillPrefill(null)} onBilled={linkBillToAppointment} />),
+    customers: () => guard("customers.browse", <Customers customers={customers} sales={sales} services={services} staff={staff} customerPackages={customerPackages} config={config} store={store} setCustomers={writers.customers} notify={notify} log={addLog} />),
+    reminders: () => guard("reminders.use", <Reminders customers={customers} setCustomers={writers.customers} sales={sales} services={services} customerPackages={customerPackages} messageTemplates={messageTemplates} setMessageTemplates={writers.messageTemplates} store={store} notify={notify} log={addLog} />),
+    services: () => guard("services.manage", <Services services={services} setServices={writers.services} items={items} notify={notify} log={addLog} />),
+    packages: () => guard("packages.manage", <Packages packages={packages} setPackages={writers.packages} customerPackages={customerPackages} setCustomerPackages={writers.customerPackages} services={services} customers={customers} setCustomers={writers.customers} setSales={writers.sales} notify={notify} log={addLog} />),
+    staff: () => guard("staff.manage", <Staff staff={staff} setStaff={writers.staff} sales={sales} appointments={appointments} store={store} notify={notify} log={addLog} />),
+    raw: () => guard("import.use", <RawData items={items} setItems={writers.items} setSales={writers.sales} setExpenses={writers.expenses} notify={notify} log={addLog} />),
+    inventory: () => guard("inventory.view", <Inventory items={items} setItems={writers.items} notify={notify} log={addLog} cats={cats} onAddCategory={addCategory} role={role} />),
     alerts: () => guard("alerts.view", <Alerts items={items} goInventory={() => setTab("inventory")} cats={cats} />),
-    barcode: () => guard("barcode.use", <BarcodeCreator items={items} setItems={setItems} store={store} notify={notify} log={addLog} />),
-    sales: () => guard("sales.view", <SalesHistory sales={sales} items={items} staff={staff} services={services} customerPackages={customerPackages} setSales={setSales} setItems={setItems} store={store} notify={notify} log={addLog} role={role} />),
+    barcode: () => guard("barcode.use", <BarcodeCreator items={items} setItems={writers.items} store={store} notify={notify} log={addLog} />),
+    sales: () => guard("sales.view", <SalesHistory sales={sales} items={items} staff={staff} services={services} customerPackages={customerPackages} setSales={writers.sales} setItems={writers.items} store={store} notify={notify} log={addLog} role={role} />),
     finance: () => (tabEnabled("finance") ? guard("finance.view", <Finance sales={sales} expenses={expenses} />) : dashboard),
     stats: () => guard("stats.view", <Stats sales={sales} expenses={expenses} items={items} customers={customers} appointments={appointments} />),
-    udhari: () => guard("udhari.manage", <Udhari sales={sales} setSales={setSales} notify={notify} log={addLog} />),
-    expense: () => guard("expenses.manage", <Expenses expenses={expenses} setExpenses={setExpenses} notify={notify} log={addLog} />),
-    vendorbills: () => guard("vendorBills.manage", <VendorBills bills={bills} setBills={setBills} setDailyBills={setDailyBills} online={online} notify={notify} log={addLog} />),
-    logs: () => guard("logs.view", <Logs logs={logs} setLogs={setLogs} notify={notify} />),
+    udhari: () => guard("udhari.manage", <Udhari sales={sales} setSales={writers.sales} notify={notify} log={addLog} />),
+    expense: () => guard("expenses.manage", <Expenses expenses={expenses} setExpenses={writers.expenses} notify={notify} log={addLog} />),
+    vendorbills: () => guard("vendorBills.manage", <VendorBills bills={bills} setBills={writers.bills} setDailyBills={writers.dailyBills} online={online} notify={notify} log={addLog} />),
+    logs: () => guard("logs.view", <Logs logs={logs} setLogs={writers.logs} notify={notify} />),
     changelog: () => <Changelog />,
-    settings: () => guard("settings.manage", <StoreConfig config={config} setConfig={setConfig} notify={notify} log={addLog} user={user} role={role} />),
-    admin: () => guard("settings.manage", <Admin items={items} setItems={setItems} setSales={setSales} setExpenses={setExpenses} setLogs={setLogs} sales={sales} customers={customers} setCustomers={setCustomers} customerPackages={customerPackages} setCustomerPackages={setCustomerPackages} config={config} user={user} notify={notify} log={addLog} />),
+    settings: () => guard("settings.manage", <StoreConfig config={config} setConfig={writers.config} notify={notify} log={addLog} user={user} role={role} />),
+    admin: () => guard("settings.manage", <Admin items={items} setItems={writers.items} setSales={writers.sales} setExpenses={writers.expenses} setLogs={writers.logs} sales={sales} customers={customers} setCustomers={writers.customers} customerPackages={customerPackages} setCustomerPackages={writers.customerPackages} config={config} user={user} notify={notify} log={addLog} />),
   };
   const view = (VIEWS[tab] || VIEWS.dashboard)();
 
@@ -1353,6 +1398,10 @@ function StoreManager({ user, role, onLogout }) {
       </main>
 
       {toast && <div style={S.toast}>{toast}</div>}
+
+      {/* Connection status on every screen, and the hard-stop popup when a write is tried offline. */}
+      <ConnBadge online={online} />
+      {offlineBlock && <OfflineBlockModal onClose={() => setOfflineBlock(false)} />}
     </div>
   );
 }
@@ -1366,6 +1415,43 @@ const NoAccess = ({ role }) => (
     <p style={{ fontSize: 13, lineHeight: 1.6, maxWidth: 380, margin: "0 auto" }}>
       You're signed in as <strong>{ROLE_LABELS[role] || "an unknown role"}</strong>. Ask the owner if you need access to this section.
     </p>
+  </div>
+);
+
+// A loud, blocking popup shown whenever a write is attempted with no connection. The app saves
+// only while online (owner's choice), so this is a hard stop — not a passing toast.
+function OfflineBlockModal({ onClose }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape" || e.key === "Enter") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return (
+    <div style={S.blockOverlay} onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }} role="alertdialog" aria-modal="true" aria-label="You are offline — change not saved">
+      <div style={S.blockCard}>
+        <div style={{ fontSize: 46, lineHeight: 1 }}>📴</div>
+        <div style={{ fontSize: 21, fontWeight: 900, color: "#fff", marginTop: 10 }}>You're offline</div>
+        <div style={{ fontSize: 14, color: "#FFE3DE", marginTop: 8, lineHeight: 1.55 }}>
+          Your change was <b style={{ color: "#fff" }}>NOT saved</b>. Salon Manager only saves while you're
+          connected to the internet — nothing is stored on this device. Reconnect and try again.
+        </div>
+        <button className="btn" style={{ marginTop: 18, background: "#fff", color: "#B3261E", fontWeight: 800 }} onClick={onClose} autoFocus>Got it</button>
+      </div>
+    </div>
+  );
+}
+
+// Always-on connection status. Fixed to the viewport so it shows on every screen; turns red and
+// pulses the moment the connection drops, since that now blocks every save.
+const ConnBadge = ({ online }) => (
+  <div
+    className={online ? undefined : "connbadge-off"}
+    style={{ ...S.connBadge, ...(online ? S.connOn : S.connOff) }}
+    role="status" aria-live="polite"
+    title={online ? "Connected — changes save live" : "No internet — changes are blocked until you reconnect"}
+  >
+    <span style={{ width: 9, height: 9, borderRadius: "50%", background: online ? "#12B76A" : "#fff", display: "inline-block" }} />
+    {online ? "Online" : "OFFLINE"}
   </div>
 );
 
@@ -1869,7 +1955,7 @@ function CustomerPicker({ customers, value, onPick, onCreate, notify }) {
 // ---------- Billing / POS ----------
 // Note: Billing reads customerPackages but never writes them. Drawing a session down IS
 // recording packageRedemptions on the bill; the shell derives usesLeft from that.
-function Billing({ items, sales, services, staff, customers, customerPackages, config, setItems, setSales, setCustomers, store = STORE, notify, log, role, user, prefill, onPrefillUsed, onBilled }) {
+function Billing({ items, sales, services, staff, customers, customerPackages, config, setItems, setSales, setCustomers, store = STORE, notify, log, role, user, guardOnline = () => true, prefill, onPrefillUsed, onBilled }) {
   const [q, setQ] = useState("");
   const [cart, setCart] = useState([]); // {id, lineType, name, icon, unit, sellPrice, buyPrice, qty, staffId?}
   const [lastSale, setLastSale] = useState(null);
@@ -2204,6 +2290,9 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
 
   const completeSale = () => {
     if (cart.length === 0) return;
+    // No sale without a connection: refuse up-front, before any receipt prints or the cart clears,
+    // so an offline tap can't leave a printed bill that was never recorded. Raises the offline modal.
+    if (!guardOnline()) return;
     // Every service line must say who performed it, or its commission has nowhere to go and
     // the stylist quietly loses the money. Cheaper to catch here than to reconcile at payout.
     const unassigned = cart.filter((c) => isServiceLine(c) && !c.staffId);
@@ -8699,6 +8788,13 @@ const S = {
   rcptTotal: { display: "flex", justifyContent: "space-between", fontWeight: 800, fontSize: 18, paddingTop: 12, marginTop: 6, borderTop: "2px dashed #C9BF9F" },
   badge: { background: "#C44536", color: "#fff", fontSize: 10.5, fontWeight: 800, borderRadius: 9, padding: "1px 7px", marginLeft: 8 },
   toast: { position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "#10331F", color: "#fff", padding: "10px 20px", borderRadius: 10, fontSize: 13.5, boxShadow: "0 6px 20px rgba(0,0,0,.25)", zIndex: 60 },
+  // Offline write-block popup: a loud, unmissable red overlay above everything else.
+  blockOverlay: { position: "fixed", inset: 0, background: "rgba(70,8,8,.6)", display: "grid", placeItems: "center", zIndex: 200, padding: 20 },
+  blockCard: { background: "#B3261E", border: "3px solid #fff", borderRadius: 18, padding: "26px 24px", width: "min(430px,94vw)", textAlign: "center", boxShadow: "0 22px 60px rgba(0,0,0,.45)" },
+  // Always-on connection status pill, fixed bottom-right so it rides along on every screen.
+  connBadge: { position: "fixed", bottom: 18, right: 16, zIndex: 90, display: "inline-flex", alignItems: "center", gap: 8, padding: "8px 14px", borderRadius: 999, fontSize: 13, fontWeight: 800, letterSpacing: ".02em", boxShadow: "0 4px 14px rgba(0,0,0,.22)", border: "2px solid", userSelect: "none" },
+  connOn: { background: "#DCFCE7", color: "#0F7A43", borderColor: "#7FDDA8" },
+  connOff: { background: "#B3261E", color: "#fff", borderColor: "#fff" },
   overlay: { position: "fixed", inset: 0, background: "rgba(15,30,20,.45)", display: "grid", placeItems: "center", zIndex: 50 },
   modal: { background: "#fff", borderRadius: 16, padding: 20, width: "min(480px, 92vw)", maxHeight: "86vh", overflow: "auto" },
 };
@@ -8713,6 +8809,9 @@ const CSS = `
      brighter text, so they read as real buttons instead of ghosted/disabled links. */
   .navbtn.util { background:#173D28; color:#E9F2EC; border:1px solid #3A6B4D; justify-content:center; font-weight:700; }
   .navbtn.util:hover { background:#1F5237; color:#fff; border-color:#4E8A66; }
+  /* Offline status pill pulses so a lost connection is impossible to miss. */
+  @keyframes connpulse { 0%,100% { box-shadow:0 4px 14px rgba(0,0,0,.22), 0 0 0 0 rgba(179,38,30,.55); } 50% { box-shadow:0 4px 14px rgba(0,0,0,.22), 0 0 0 9px rgba(179,38,30,0); } }
+  .connbadge-off { animation:connpulse 1.4s ease-in-out infinite; }
   .input { width:100%; box-sizing:border-box; padding:10px 12px; border:1.5px solid #D5E0D6; border-radius:9px; font-size:14px; background:#fff; outline:none; font-family:inherit; }
   .input:focus { border-color:#1B5E43; box-shadow:0 0 0 3px rgba(27,94,67,.12); }
   .btn { border:none; border-radius:9px; padding:9px 16px; font-size:13.5px; font-weight:700; cursor:pointer; background:#E4ECE5; color:#23402F; font-family:inherit; }
