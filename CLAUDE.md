@@ -78,6 +78,55 @@ to match the README:
   refuses this; the rules cannot express it (RTDB has no way to count siblings matching a
   predicate). Closing it server-side needs a maintained counter node or a Cloud Function.
 
+## Sending a bill on WhatsApp
+
+One receipt layout, two deliveries. `receiptHtml()` in `salon-manager.jsx` is the **single
+source** of receipt markup; `printReceipt()` sends it to paper and `SendBillActions` rasterizes
+it to a JPEG. Anything added to one is in the other for free — that is the whole point of the
+split, so don't inline receipt markup into a caller.
+
+| Where | What |
+|---|---|
+| [`src/lib/receiptImage.js`](src/lib/receiptImage.js) | HTML → JPEG. SVG `<foreignObject>` → `<img>` → canvas. No dependency. |
+| [`src/lib/receipts.js`](src/lib/receipts.js) | pure: the message, the `wa.me` link, the storage path |
+| [`src/lib/receiptStorage.js`](src/lib/receiptStorage.js) | thin Storage adapter (upload/delete) |
+
+**It's a JPEG, not a PDF, and that's load-bearing.** Every built-in PDF font encodes WinAnsi,
+which has no `₹` (U+20B9) — and a Devanagari shop name needs Indic shaping on top. A PDF would
+mean bundling font subsets, and the app has to work with the Wi-Fi off. Rasterizing hands text
+shaping to the browser, which already has those fonts.
+
+**Two rules the rasterizer cannot bend:**
+
+1. **`<foreignObject>` content is parsed as XML, not HTML.** `&nbsp;` is a *fatal parse error*
+   there and every void element must be self-closed. `toXhtml()` repairs both. A receipt that
+   renders blank is almost always this.
+2. **An SVG loaded through `<img>` fetches nothing external.** A remote `<img src>` inside it
+   renders blank and taints the canvas, so `toBlob()` throws. This is why
+   `receiptHtml(..., { forImage: true })` drops the two bundled `/public` assets — every image
+   in the rasterized markup must be a `data:` URL.
+
+Styling therefore hangs off **`.rcpt`, never `body`** — a foreignObject has no `body` element
+for a `body {}` rule to land on, and a receipt styled through `body` rasterizes unpadded.
+
+**Delivery is still a human pressing send**, exactly as in the reminder queue — no WhatsApp
+Business API. A `wa.me` link cannot carry a file, which is why there are two buttons: *WhatsApp
+bill* uploads the JPEG and sends its URL to the right customer's chat, and *Share bill* hands
+the file to `navigator.share` (real inline image, works offline, but the user picks the chat).
+The share button is hidden where `canShare({files})` is false — most desktops.
+
+**A send failure is a modal, not a toast** (`SendFailedModal`, the same red hard-stop as a blocked
+offline write). The salon otherwise walks away believing the customer has their bill, and the
+message carries the fix — usually a shell command — which a toast that fades in three seconds is
+the wrong place for. The upload is capped at 20s and, on failure, probes the bucket so "Storage
+was never enabled" doesn't present as a generic timeout.
+
+`shop/receipts/**` is **public-read** in [`storage.rules`](storage.rules): the customer opening
+the link is not signed in and never will be. What protects a receipt is an unguessable URL —
+Firebase's random download token, on a path keyed by **sale id, never the phone number**.
+Nothing writes the uploaded URL back onto the sale; re-sending re-uploads to the same
+deterministic path, for the same reason nothing in this app keeps a running total.
+
 ## Service icons
 
 Split in two, on purpose:

@@ -18,6 +18,9 @@ import {
 import { parseFile, parseRawText } from "./lib/parse.js";
 import { itemBarcodes, findItemByBarcode, findBarcodeClash, parseBarcodeText, withBarcodeSep, looksLikeBarcode } from "./lib/barcodes.js";
 import { exportJson, exportXlsx, importXlsx } from "./lib/backup.js";
+import { renderReceiptFile, canShareImages } from "./lib/receiptImage.js";
+import { receiptWaLink, receiptMessage } from "./lib/receipts.js";
+import { uploadReceiptImage, uploadErrorMessage } from "./lib/receiptStorage.js";
 import { can, ROLE_LABELS, ROLE_DESCRIPTIONS, ROLES, resolveRole, isBootstrap, validateUserChange } from "./lib/roles.js";
 import {
   PRODUCT_CATEGORIES, PRODUCT_CATEGORY_ICONS, SERVICE_CATEGORIES, serviceIconFor,
@@ -186,20 +189,35 @@ function printHtml(html, title) {
   iframe.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title || "Print")}</title></head><body>${html}</body></html>`;
 }
 
-// Build a thermal-style receipt and send it to the printer.
+// Build a thermal-style receipt as a standalone HTML fragment.
 // PRESENTATION ONLY — this function computes no bill data. Every value below (l.name, l.qty,
 // l.price, l.amount, sale.total, discount, payment …) is read straight off the sale and merely
-// laid out for a 72mm (80mm paper) ESC/POS thermal printer. See printHtml() for the print
-// mechanism (isolated iframe document → no app-UI leakage).
+// laid out for a 72mm (80mm paper) ESC/POS thermal printer.
 // `extras` carries the salon bits a receipt needs but a bill doesn't store: the customer's
 // points balance AFTER this bill, and when they're next due. Both are derived at print time
 // from live data (the ledger is the bills), so a reprint months later shows today's truth —
 // which is the right answer for a balance and a suggestion, and would be the wrong answer for
 // money. The money on this receipt all comes off the sale record itself.
-function printReceipt(sale, store = STORE, staff = [], extras = {}) {
+//
+// This is the SINGLE SOURCE of receipt layout, deliberately separated from delivery. Two
+// callers render it: printReceipt() (hidden iframe → paper) and the WhatsApp share path
+// (offscreen node → JPEG, src/lib/receiptImage.js). Anything that only makes sense on paper
+// would silently disappear from the customer's copy, so keep them one document.
+//
+// `forImage` drops the two /public asset URLs the rasterizer cannot inline (see
+// receiptImage.js): an <img src="http://…"> taints the canvas and the export throws. A custom
+// logo/QR uploaded in Settings is already a data URL, and a UPI QR is generated locally as one,
+// so both survive either way.
+//
+// The one place paper and image legitimately differ: a shop that has configured NEITHER a UPI
+// ID nor its own payment QR gets the bundled placeholder QR on paper and no QR at all in the
+// customer's copy. That is the better failure — the bundled image is a demo placeholder that
+// pays a stranger, and a receipt is proof of a payment already made, not a request for one.
+export function receiptHtml(sale, store = STORE, staff = [], extras = {}, { forImage = false } = {}) {
   // Custom logo/QR are stored as data URLs (already absolute); the bundled fallbacks are
   // relative /public assets that must be made absolute for the print iframe (about:blank).
-  const logoUrl = store.logo ? store.logo : assetUrl(LOGO_SRC);
+  // For an image export the bundled fallbacks are dropped instead — see the header note.
+  const logoUrl = store.logo ? store.logo : forImage ? "" : assetUrl(LOGO_SRC);
   const ref = billRef(sale);
   // Dynamic UPI QR: when a VPA is configured, encode this bill's exact total so the customer's app
   // opens with the amount pre-filled. The bill ref rides along as the payment note (tn) so an
@@ -207,7 +225,9 @@ function printReceipt(sale, store = STORE, staff = [], extras = {}) {
   // fixed payment-QR image. `dynQr` also drives the caption + pixelated rendering below.
   const upiUri = upiPayUri({ vpa: store.upiId, name: store.upiName || store.name, amount: sale.total, note: ref ? "Bill " + ref : store.name });
   const dynQr = !!upiUri;
-  const qrUrl = dynQr ? qrDataUrl(upiUri) : store.paymentQr ? store.paymentQr : assetUrl(PAYMENT_QR_SRC);
+  // A generated QR is a data URL and is always safe to inline; only the bundled fallback image
+  // is dropped for an image export.
+  const qrUrl = dynQr ? qrDataUrl(upiUri) : store.paymentQr ? store.paymentQr : forImage ? "" : assetUrl(PAYMENT_QR_SRC);
   const rows = sale.lines
     .map((l) => {
       // Unit-price subline under the name: preserves the "unit price" field without a 4th column.
@@ -226,7 +246,7 @@ function printReceipt(sale, store = STORE, staff = [], extras = {}) {
       return `<tr><td class="col-name"><span class="nm">${escapeHtml(l.name)}</span>${sub}${by}</td><td class="col-qty">${escapeHtml(String(l.qty))}</td><td class="col-amt">${INR(l.amount)}</td></tr>`;
     })
     .join("");
-  printHtml(
+  return (
     `<style>
     /* Dedicated 72mm thermal receipt. size:_auto_ height => no blank paper feed; margin:0 =>
        no scaling. Everything is pure #000; print-color-adjust:exact keeps black solid + QR crisp. */
@@ -239,7 +259,11 @@ function printReceipt(sale, store = STORE, staff = [], extras = {}) {
     /* 4mm side padding (not 2mm): the printable area is 72mm but the print head's right/left
        non-printable margins vary, and right-aligned amounts were clipping at the paper edge.
        4mm each side keeps the last digit safely inside the printable window on 80mm rolls. */
-    body { width: 72mm; padding: 3mm 4mm 8mm; color: #000;
+    /* The paper box is .rcpt, NOT body: an SVG foreignObject (the image export) has no body
+       element for a body rule to land on, so a receipt styled through body would rasterize
+       unpadded and full-bleed. Styling a plain element keeps print and image identical.
+       The html/body rule above stays for the print document, where both match at 72mm. */
+    .rcpt { width: 72mm; padding: 3mm 4mm 8mm; color: #000; background: #fff;
       font-family: 'Courier New', Courier, monospace; font-size: 12px; font-weight: 600; line-height: 1.35;
       -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .logo { display:block; margin:0 auto 1mm; height:12mm; object-fit:contain; }
@@ -267,7 +291,8 @@ function printReceipt(sale, store = STORE, staff = [], extras = {}) {
     .qr img.gen { image-rendering: pixelated; image-rendering: crisp-edges; }
     .qr .cap { font-size:11px; font-weight:700; margin-top:1mm; }
     </style>
-    <img class="logo" src="${logoUrl}" alt="" onerror="this.style.display='none'" />
+    <div class="rcpt">
+    ${logoUrl ? `<img class="logo" src="${logoUrl}" alt="" onerror="this.style.display='none'" />` : ""}
     <div class="shop">${escapeHtml(store.name)}</div>
     <div class="addr">${escapeHtml(store.address)}</div>
     ${store.phone ? `<div class="addr">☎ ${escapeHtml(store.phone)}</div>` : ""}
@@ -288,12 +313,18 @@ function printReceipt(sale, store = STORE, staff = [], extras = {}) {
     <div class="rule"></div>
     ${extras.nextVisit ? `<div class="ft">${escapeHtml(extras.nextVisit)}</div>` : ""}
     <div class="ft">Thank you! Please visit again.</div>
-    <div class="qr">
+    ${qrUrl ? `<div class="qr">
       <img class="${dynQr ? "gen" : ""}" src="${qrUrl}" alt="Scan to pay" onerror="this.style.display='none'" />
       <div class="cap">Scan to Pay${dynQr ? " " + INR(sale.total) : ""} · PhonePe / UPI</div>
-    </div>`,
-    "Receipt"
+    </div>` : ""}
+    </div>`
   );
+}
+
+// Build a thermal-style receipt and send it to the printer. See printHtml() for the print
+// mechanism (isolated iframe document → no app-UI leakage) and receiptHtml() for the layout.
+function printReceipt(sale, store = STORE, staff = [], extras = {}) {
+  printHtml(receiptHtml(sale, store, staff, extras), "Receipt");
 }
 
 /**
@@ -329,6 +360,116 @@ function receiptExtras(sale, { customerPackages = [], services = [], sales = [] 
     extras.nextVisit = `See you around ${nice} — book ahead to keep your slot.`;
   }
   return extras;
+}
+
+/**
+ * "Send the customer their bill on WhatsApp" — the two deliveries, side by side.
+ *
+ * Both render the SAME receipt the printer gets (receiptHtml → JPEG), so a customer's copy can
+ * never drift from the paper one. Neither sends anything by itself: each hands a filled-in
+ * message to WhatsApp and a human presses send, matching the reminder queue. See
+ * src/lib/receipts.js for why the two exist rather than one.
+ *
+ * WhatsApp (link)  — needs a saved phone and a connection; opens the right customer's chat.
+ * Share…           — needs neither, attaches the image inline, but the user picks the contact.
+ *                    Hidden entirely where the OS can't take a file (most desktops).
+ *
+ * Deliberately does NOT write the uploaded URL back onto the sale. Re-sending re-uploads to the
+ * same deterministic path, which costs one small PUT and is always current; caching the URL on
+ * the bill would add a second, staler copy of something the bill can already regenerate — the
+ * same reason nothing in this app keeps a running total.
+ */
+function SendBillActions({ sale, store = STORE, staff = [], extras = {}, notify, guardOnline = () => true, size = "small" }) {
+  const [busy, setBusy] = useState(""); // "" | "link" | "share"
+  // Which step is running, shown on the button. Not decoration: the two steps fail for
+  // completely different reasons (markup vs. Firebase Storage setup), and "Preparing…" for
+  // both makes a stalled upload indistinguishable from a stalled render.
+  const [step, setStep] = useState("");
+  // A failure to send is a hard stop, not a toast — see SendFailedModal.
+  const [failed, setFailed] = useState("");
+  // Probed once per mount: the answer is a property of the device, not of this bill.
+  const shareable = useMemo(() => canShareImages(), []);
+  const phone = sale?.customerPhone || sale?.mobile || "";
+  const cls = "btn" + (size === "small" ? " small" : "");
+
+  const buildFile = () =>
+    renderReceiptFile(receiptHtml(sale, store, staff, extras, { forImage: true }), sale);
+
+  // LINK: upload, then open the customer's chat with the URL in the message.
+  const sendLink = async () => {
+    if (!guardOnline()) return; // uploading needs the network; the shell raises the offline modal
+    setBusy("link");
+    setFailed(""); // clear the previous failure's red outline before retrying
+    try {
+      setStep("Rendering…");
+      const file = await buildFile();
+      setStep("Uploading…");
+      const { receiptURL } = await uploadReceiptImage(sale.id, file, (p) =>
+        setStep(p > 0 && p < 1 ? `Uploading ${Math.round(p * 100)}%` : "Uploading…"),
+      );
+      // Opened synchronously after an await, so some browsers treat it as a non-gesture popup.
+      // A blocked window is the one failure the user can't see, hence the explicit fallback.
+      const win = window.open(receiptWaLink(sale, store, receiptURL), "_blank", "noopener");
+      // A blocked pop-up is a silent non-delivery — the salon would never know — so it gets the
+      // same hard stop as a failed upload rather than a toast.
+      if (win) notify(`WhatsApp opened for ${formatPhone(phone)} — press send there`);
+      else setFailed("Your browser blocked the WhatsApp window. Allow pop-ups for this site, then try again — or use Share bill instead.");
+    } catch (e) {
+      console.error("send bill failed", e);
+      // The upload half fails for setup reasons the owner can actually fix, so name them.
+      // Share bill needs no bucket at all, which makes it the useful thing to suggest.
+      setFailed(uploadErrorMessage(e));
+    } finally {
+      setBusy("");
+      setStep("");
+    }
+  };
+
+  // SHARE: hand the JPEG to the OS share sheet. Works offline — WhatsApp queues it.
+  const sendShare = async () => {
+    setBusy("share");
+    setFailed("");
+    try {
+      setStep("Rendering…");
+      const file = await buildFile();
+      setStep("Sharing…");
+      await navigator.share({ files: [file], text: receiptMessage(sale, store) });
+      notify("Bill shared — press send in WhatsApp");
+    } catch (e) {
+      // Dismissing the share sheet is an AbortError, not a failure worth a toast.
+      if (e?.name !== "AbortError") {
+        console.error("share bill failed", e);
+        setFailed(e?.message || "The share sheet could not open. Try again, or print the bill instead.");
+      }
+    } finally {
+      setBusy("");
+      setStep("");
+    }
+  };
+
+  // Left on the button after a failure, so the row still reads "this one didn't go" once the
+  // dialog is dismissed. Cleared as soon as the next attempt starts.
+  const alertStyle = failed ? { borderColor: "#B3261E", color: "#B3261E", boxShadow: "0 0 0 2px rgba(179,38,30,.18)" } : undefined;
+
+  return (
+    <>
+      <button
+        className={cls}
+        style={alertStyle}
+        onClick={sendLink}
+        disabled={!!busy || !phone}
+        title={phone ? `Opens WhatsApp for ${formatPhone(phone)} with the bill attached as a link` : "No mobile number saved on this bill"}
+      >
+        {busy === "link" ? step || "Preparing…" : "💬 WhatsApp bill"}
+      </button>
+      {shareable && (
+        <button className={cls} style={alertStyle} onClick={sendShare} disabled={!!busy} title="Share the bill image to WhatsApp (you pick the chat)">
+          {busy === "share" ? step || "Preparing…" : "📎 Share bill"}
+        </button>
+      )}
+      {failed && <SendFailedModal message={failed} onClose={() => setFailed("")} />}
+    </>
+  );
 }
 
 // The Scan-to-Pay QR shown live in the billing panel while payment = UPI. When a UPI ID is set it
@@ -1352,7 +1493,7 @@ function StoreManager({ user, role, onLogout }) {
     inventory: () => guard("inventory.view", <Inventory items={items} setItems={writers.items} notify={notify} log={addLog} cats={cats} onAddCategory={addCategory} role={role} />),
     alerts: () => guard("alerts.view", <Alerts items={items} goInventory={() => setTab("inventory")} cats={cats} />),
     barcode: () => guard("barcode.use", <BarcodeCreator items={items} setItems={writers.items} store={store} notify={notify} log={addLog} />),
-    sales: () => guard("sales.view", <SalesHistory sales={sales} items={items} staff={staff} services={services} customerPackages={customerPackages} setSales={writers.sales} setItems={writers.items} store={store} notify={notify} log={addLog} role={role} />),
+    sales: () => guard("sales.view", <SalesHistory sales={sales} items={items} staff={staff} services={services} customerPackages={customerPackages} setSales={writers.sales} setItems={writers.items} store={store} notify={notify} log={addLog} role={role} guardOnline={guardOnline} />),
     finance: () => (tabEnabled("finance") ? guard("finance.view", <Finance sales={sales} expenses={expenses} />) : dashboard),
     stats: () => guard("stats.view", <Stats sales={sales} expenses={expenses} items={items} customers={customers} appointments={appointments} />),
     udhari: () => guard("udhari.manage", <Udhari sales={sales} setSales={writers.sales} notify={notify} log={addLog} />),
@@ -1484,6 +1625,40 @@ function OfflineBlockModal({ onClose }) {
         <div style={{ fontSize: 14, color: "#FFE3DE", marginTop: 8, lineHeight: 1.55 }}>
           Your change was <b style={{ color: "#fff" }}>NOT saved</b>. Salon Manager only saves while you're
           connected to the internet — nothing is stored on this device. Reconnect and try again.
+        </div>
+        <button className="btn" style={{ marginTop: 18, background: "#fff", color: "#B3261E", fontWeight: 800 }} onClick={onClose} autoFocus>Got it</button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * "The bill did not reach the customer" — the same loud red hard-stop as a blocked offline write.
+ *
+ * Deliberately a modal and not a toast. A send failure is not an FYI: the salon believes the
+ * customer has their bill, and nobody is watching the corner of the screen for three seconds
+ * while they hand back a card. It also carries the fix (enable Storage, deploy the rules), and a
+ * toast is the wrong place to put an instruction someone has to act on. It waits to be dismissed.
+ */
+function SendFailedModal({ message, onClose }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape" || e.key === "Enter") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return (
+    <div style={S.blockOverlay} onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }} role="alertdialog" aria-modal="true" aria-label="Bill not sent">
+      <div style={S.blockCard}>
+        <div style={{ fontSize: 46, lineHeight: 1 }}>⚠️</div>
+        <div style={{ fontSize: 21, fontWeight: 900, color: "#fff", marginTop: 10 }}>Bill not sent</div>
+        <div style={{ fontSize: 14, color: "#FFE3DE", marginTop: 8, lineHeight: 1.55 }}>
+          The customer has <b style={{ color: "#fff" }}>NOT</b> received this bill. The sale itself is
+          saved — only sending failed, so you can print it or try again.
+        </div>
+        {/* The reason sits in its own inset panel: it can be a shell command, and it must be
+            readable and selectable rather than run together with the sentence above. */}
+        <div style={{ fontSize: 13, color: "#fff", marginTop: 12, lineHeight: 1.5, background: "rgba(0,0,0,.24)", border: "1px solid rgba(255,255,255,.38)", borderRadius: 10, padding: "10px 12px", textAlign: "left", wordBreak: "break-word", userSelect: "text" }}>
+          {message}
         </div>
         <button className="btn" style={{ marginTop: 18, background: "#fff", color: "#B3261E", fontWeight: 800 }} onClick={onClose} autoFocus>Got it</button>
       </div>
@@ -2598,7 +2773,14 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
           {cart.length === 0 ? (
             <Empty text="Bill is empty. Tap services or products on the left to add.">
               {lastSale && (
-                <button className="btn" onClick={() => printReceipt(lastSale, store, staff, receiptExtras(lastSale, { customerPackages, services, sales }))}>🖨 Print last bill · {INR(lastSale.total)}</button>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
+                  <button className="btn" onClick={() => printReceipt(lastSale, store, staff, receiptExtras(lastSale, { customerPackages, services, sales }))}>🖨 Print last bill · {INR(lastSale.total)}</button>
+                  <SendBillActions
+                    sale={lastSale} store={store} staff={staff}
+                    extras={receiptExtras(lastSale, { customerPackages, services, sales })}
+                    notify={notify} guardOnline={guardOnline} size="normal"
+                  />
+                </div>
               )}
             </Empty>
           ) : (
@@ -3884,7 +4066,10 @@ function RawData({ items, setItems, setSales, setExpenses, notify, log }) {
 // ---------- Sales history ----------
 const PAY_COLORS = { UPI: "#2A6FB0", Cash: "#1b5e43", Udhari: "#C44536" };
 
-function SalesHistory({ sales, items, staff, services = [], customerPackages = [], setSales, setItems, store = STORE, notify, log, role }) {
+// guardOnline is needed for one thing only: sending a bill uploads its image, and an upload
+// with no connection must raise the same "not saved — you're offline" modal every other write
+// does, rather than failing somewhere inside Firebase Storage.
+function SalesHistory({ sales, items, staff, services = [], customerPackages = [], setSales, setItems, store = STORE, notify, log, role, guardOnline = () => true }) {
   const [open, setOpen] = useState(null);
   const [openDates, setOpenDates] = useState(() => new Set()); // expanded past dates (today is always open)
   const [from, setFrom] = useState("");
@@ -4282,6 +4467,11 @@ function SalesHistory({ sales, items, staff, services = [], customerPackages = [
                       decision, and the database rules enforce the delete half of that too. */}
                   <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
                     <button className="btn small" onClick={() => printReceipt(s, store, staff, receiptExtras(s, { customerPackages, services, sales }))}>🖨 Print</button>
+                    <SendBillActions
+                      sale={s} store={store} staff={staff}
+                      extras={receiptExtras(s, { customerPackages, services, sales })}
+                      notify={notify} guardOnline={guardOnline}
+                    />
                     {can(role, "sales.edit") && <button className="btn small ghost" onClick={() => openEdit(s)}>✎ Edit bill</button>}
                     {can(role, "sales.edit") && <button className="btn small ghost" onClick={() => openSplit(s)}>✂ Split</button>}
                     {can(role, "sales.delete") && <button className="btn small danger" onClick={() => deleteSale(s)}>🗑 Delete</button>}

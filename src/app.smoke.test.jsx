@@ -29,8 +29,13 @@ vi.mock("firebase/auth", () => ({
   EmailAuthProvider: { credential: vi.fn() },
   reauthenticateWithCredential: vi.fn(),
 }));
+// Every named export the app actually imports must be listed: vitest throws on an import of a
+// name the mock factory doesn't define, so a missing one fails module init rather than the call.
+// uploadBytes is vendor-bill proofs (bills.js); uploadBytesResumable is customer receipts
+// (receiptStorage.js), which needs the resumable form so a stalled upload can be cancelled.
 vi.mock("firebase/storage", () => ({
-  ref: vi.fn(), uploadBytes: vi.fn(), getDownloadURL: vi.fn(), deleteObject: vi.fn(),
+  ref: vi.fn(), uploadBytes: vi.fn(), uploadBytesResumable: vi.fn(),
+  getDownloadURL: vi.fn(), deleteObject: vi.fn(),
 }));
 vi.mock("firebase/app", () => ({ initializeApp: vi.fn(() => ({})), deleteApp: vi.fn() }));
 
