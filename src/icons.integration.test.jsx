@@ -28,9 +28,19 @@ const SERVICES = {
 const STAFF = { t1: { id: "t1", name: "Priya Sharma", role: "Hair Stylist", color: "#7C3AED", phone: "", commissionPctDefault: 10, active: true, createdAt: "2026-08-01" } };
 // Two bookings in one column: a 30-minute cut (roomy enough for an icon) and a 15-minute
 // threading slot (which must stay text-only).
+//
+// The date is computed, not written down. The diary opens on TODAY, so a literal date makes this
+// a test that passes on one calendar day and fails forever after — which is exactly what a
+// hard-coded "2026-08-02" did here: it went red on 3 August and stayed red on every machine,
+// silently, because CI had not run since. Built the same way the app builds it (local parts, not
+// toISOString, which would file an early-morning IST booking under yesterday).
+const TODAY = (() => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+})();
 const APPOINTMENTS = {
-  a1: { id: "a1", date: "2026-08-02", staffId: "t1", customerPhone: "", serviceIds: ["s1"], startMin: 660, durationMin: 30, status: "booked", note: "", createdAt: "2026-08-01" },
-  a2: { id: "a2", date: "2026-08-02", staffId: "t1", customerPhone: "", serviceIds: ["s3"], startMin: 720, durationMin: 15, status: "booked", note: "", createdAt: "2026-08-01" },
+  a1: { id: "a1", date: TODAY, staffId: "t1", customerPhone: "", serviceIds: ["s1"], startMin: 660, durationMin: 30, status: "booked", note: "", createdAt: "2026-08-01" },
+  a2: { id: "a2", date: TODAY, staffId: "t1", customerPhone: "", serviceIds: ["s3"], startMin: 720, durationMin: 15, status: "booked", note: "", createdAt: "2026-08-01" },
 };
 
 // One customer with one bill: a service line (which gets an icon) and a retail line (which does
