@@ -17,7 +17,11 @@ import {
 } from "./lib/sync.js";
 import { parseFile, parseRawText } from "./lib/parse.js";
 import { itemBarcodes, findItemByBarcode, findBarcodeClash, parseBarcodeText, withBarcodeSep, looksLikeBarcode } from "./lib/barcodes.js";
-import { exportJson, exportXlsx, importXlsx } from "./lib/backup.js";
+// NOT imported here on purpose — backup.js pulls in the whole `xlsx` library (161 kB gzipped),
+// which is a sixth of everything the browser downloads before the login form can be drawn. It is
+// loaded on demand inside exportData/importData instead, the same way parse.js already defers
+// pdfjs. A phone on shop Wi-Fi pays for the spreadsheet writer when it asks for a backup, not
+// every time somebody signs in.
 import { renderReceiptFile, canShareImages } from "./lib/receiptImage.js";
 import { receiptWaLink, receiptMessage } from "./lib/receipts.js";
 import { uploadReceiptImage, uploadErrorMessage } from "./lib/receiptStorage.js";
@@ -28,6 +32,7 @@ import {
 } from "./lib/seed.js";
 import { resolveIcon, isIconKey, ICON_KEYS, ICON_LABELS, CATEGORY_FALLBACK } from "./lib/serviceIcons.js";
 import { ServiceIcon, ServiceIconChip, ServiceIconDefs, SERVICE_ICON_CSS } from "./components/ServiceIcon.jsx";
+import { MQ, MAX, BREAKPOINTS, CONTENT_MAX, TOUCH_TARGET, RAIL_WIDTH, RAIL_WIDTH_ICONS } from "./lib/breakpoints.js";
 import {
   normalizePhone, isValidPhone, formatPhone, blankCustomer, searchCustomers,
   reconcileCustomers, billsForCustomer, toDayMonth, fromDayMonth, isValidDayMonth,
@@ -104,6 +109,36 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 
 const billRef = (sale) => String((sale && sale.id) || "").slice(-6).toUpperCase();
 const escapeHtml = (s) =>
   String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// ---------- viewport ----------
+// Most responsive behaviour is plain CSS (see the media queries at the bottom of this file):
+// a rule that only re-flows a layout should never cost a React render. This hook is for the
+// few places where the phone needs DIFFERENT MARKUP, not restyled markup — the bottom tab bar
+// versus the sidebar, and the calendar's one-stylist mode. Rendering both and hiding one with
+// CSS would put two copies of every nav button in the accessibility tree.
+//
+// Defensive about matchMedia: jsdom's implementation always reports `matches: false`, which is
+// exactly the right answer for a test (it renders the original desktop shell, so the existing
+// suites keep asserting what they always did), and older WebKit only has the deprecated
+// addListener/removeListener pair.
+function useMediaQuery(query) {
+  const [matches, setMatches] = useState(
+    () => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia(query).matches
+  );
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
+    const mql = window.matchMedia(query);
+    const onChange = (e) => setMatches(e.matches);
+    setMatches(mql.matches); // re-sync: the width can change between first render and effect
+    if (mql.addEventListener) mql.addEventListener("change", onChange);
+    else if (mql.addListener) mql.addListener(onChange); // Safari < 14
+    return () => {
+      if (mql.removeEventListener) mql.removeEventListener("change", onChange);
+      else if (mql.removeListener) mql.removeListener(onChange);
+    };
+  }, [query]);
+  return matches;
+}
 
 // Brand + payment assets (served from /public). BASE_URL is "/" in dev and the repo
 // sub-path on GitHub Pages, so these resolve correctly in both. assetUrl() makes them
@@ -1006,6 +1041,13 @@ const OTHER_TABS = [
   ["admin", "⚙", "Admin", "settings.manage"],
 ];
 
+// The four tabs a phone gets on its bottom bar, in the order they appear there. This is the
+// PREFERENCE list, not the guarantee: the bar is filled from whatever the signed-in role can
+// actually reach (see phoneTabs), so a role without one of these never gets a dead slot.
+// Everything else lives one tap away behind "More". Deliberately short — five targets across a
+// 360px screen is 72px each, and a sixth would put them below a thumb's accuracy.
+const PHONE_BAR_TABS = ["dashboard", "billing", "appointments", "customers"];
+
 // A tab is reachable when its feature flag is on AND the signed-in role holds its permission.
 const tabAllowed = (role, [k, , , action]) => tabEnabled(k) && (!action || can(role, action));
 
@@ -1333,11 +1375,12 @@ function StoreManager({ user, role, onLogout }) {
     );
   };
 
-  const exportData = (fmt) => {
+  const exportData = async (fmt) => {
     const data = { items, sales, expenses, logs, vendorBills: bills, dailyBills, customCats };
     const slug = (store.name || "salon").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "salon";
     const fname = `${slug}-${todayStr()}.${fmt === "xlsx" ? "xlsx" : "json"}`;
     try {
+      const { exportJson, exportXlsx } = await import("./lib/backup.js");
       if (fmt === "xlsx") exportXlsx(data, fname);
       else exportJson(data, fname);
       addLog("backup", `Backup downloaded (${fmt.toUpperCase()})`);
@@ -1355,6 +1398,7 @@ function StoreManager({ user, role, onLogout }) {
     if (!guardOnline()) return; // a restore rewrites the whole tree — never while offline
     try {
       const ext = (f.name.split(".").pop() || "").toLowerCase();
+      const { importXlsx } = await import("./lib/backup.js");
       const d = ext === "xlsx" || ext === "xls" ? await importXlsx(f) : JSON.parse(await f.text());
       if (!d || !Array.isArray(d.items)) throw new Error("bad file");
       if (!confirm("Restore this backup? It will REPLACE all current data on this device.")) return;
@@ -1456,6 +1500,65 @@ function StoreManager({ user, role, onLogout }) {
   // lives inside it (so the current page is never hidden behind a collapsed group).
   const showOther = otherOpen || myOtherTabs.some(([k]) => k === tab);
 
+  // ---- shell shape ----
+  // The only two places the app needs DIFFERENT MARKUP rather than restyled markup: a phone
+  // swaps the sidebar for a bottom bar, and a tablet's icon rail can be expanded over the page.
+  // Everything else responsive is CSS. (In jsdom matchMedia always reports false, so tests keep
+  // rendering the original desktop shell.)
+  const isPhone = useMediaQuery(MQ.phone);
+  const isTabletRail = useMediaQuery(MQ.tablet);
+  const [railOpen, setRailOpen] = useState(false); // tablet: icon rail expanded over the content
+  const [moreOpen, setMoreOpen] = useState(false); // phone: the "More" sheet
+
+  // A count that rides on a nav entry. Centralised because the same number now has to appear in
+  // three places — the rail, the bottom bar, and (aggregated) on "More" when its tab is inside
+  // the sheet — and three copies of this ternary would drift.
+  const tabBadge = useCallback(
+    (k) => (k === "inventory" ? lowStock.length : k === "alerts" && tabEnabled("alerts") ? alertCount : 0),
+    [lowStock.length, alertCount]
+  );
+
+  // The four slots on the bottom bar, in front-of-house order. A role that lacks one of these
+  // (a biller has no Customers) gets its next rail entry promoted instead of a dead slot, so the
+  // bar is always four wide and never offers something the role can't open.
+  const phoneTabs = useMemo(() => {
+    const byKey = new Map(myTopTabs.map((t) => [t[0], t]));
+    const picked = PHONE_BAR_TABS.map((k) => byKey.get(k)).filter(Boolean);
+    for (const t of myTopTabs) {
+      if (picked.length >= 4) break;
+      if (!picked.includes(t)) picked.push(t);
+    }
+    return picked.slice(0, 4);
+  }, [myTopTabs]);
+  const onBar = new Set(phoneTabs.map(([k]) => k));
+  // Everything the bar couldn't fit, in rail order, so the sheet reads like the sidebar does.
+  const sheetTabs = [...myTopTabs.filter(([k]) => !onBar.has(k)), ...myOtherTabs];
+  const moreBadge = sheetTabs.reduce((n, [k]) => n + tabBadge(k), 0);
+
+  // Close both overlays when the viewport grows past the band that owns them — otherwise
+  // rotating a tablet to landscape leaves a sheet or an expanded rail stranded on a desktop
+  // layout, covering content with no visible way back.
+  useEffect(() => { if (!isPhone) setMoreOpen(false); }, [isPhone]);
+  useEffect(() => { if (!isTabletRail) setRailOpen(false); }, [isTabletRail]);
+
+  // While the sheet is open the page behind it must not scroll: on iOS a swipe that starts on
+  // the sheet otherwise scrolls the document underneath and the sheet appears to drift away.
+  useEffect(() => {
+    if (!moreOpen) return undefined;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKey = (e) => { if (e.key === "Escape") setMoreOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = previous;
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [moreOpen]);
+
+  // Picking a tab from either overlay closes it — a nav that stays open over the page it just
+  // navigated to reads as a stuck menu.
+  const goTab = useCallback((k) => { setTab(k); setMoreOpen(false); setRailOpen(false); }, []);
+
   // ---- the render switch, with a permission guard on every gated view ----
   // `guard` is the second enforcement layer. The nav already hides what a role can't reach, but
   // `tab` is ordinary state: hiding a button is not a control. Each branch names the SAME action
@@ -1506,28 +1609,74 @@ function StoreManager({ user, role, onLogout }) {
   };
   const view = (VIEWS[tab] || VIEWS.dashboard)();
 
+  // The foot of the sidebar, written once and rendered in two places — at the bottom of the rail
+  // on a desktop, and inside the "More" sheet on a phone. Duplicating this markup is how the two
+  // would quietly drift apart (a new backup format added to one and not the other).
+  const backupBlock = ({ first }) => (
+    // `marginTop:auto` pushes the block to the foot of the rail; inside the sheet there is no
+    // free space to push into, and doing it there would leave a gap above the actions.
+    <div className="navutil" style={{ marginTop: first ? "auto" : 4, padding: "8px 8px 4px" }}>
+      <div className="navgrouplabel" style={{ fontSize: 10.5, color: "#6E8A7C", textTransform: "uppercase", letterSpacing: ".06em", padding: "0 6px 4px" }}>Backup</div>
+      <div className="navrow">
+        <button className="navbtn util" onClick={() => exportData("json")}>⬇ JSON</button>
+        <button className="navbtn util" onClick={() => exportData("xlsx")}>⬇ XLSX</button>
+      </div>
+      <label className="navbtn util" style={{ cursor: "pointer", marginTop: 6 }}>
+        ⬆ Restore (JSON / XLSX)
+        <input type="file" accept=".json,.xlsx,.xls,application/json" onChange={importData} style={{ display: "none" }} />
+      </label>
+    </div>
+  );
+  // display/gap come from the .navrow class rather than from an inline style, so the collapsed
+  // tablet rail can hide the whole block with CSS. An inline `display:flex` would outrank it.
+  const accountBlock = ({ pushDown }) => (
+    <div className="navutil navrow" style={{ padding: "8px 8px 4px", marginTop: pushDown ? "auto" : 0 }}>
+      <button className="navbtn util" onClick={resetMyPassword}>🔑 Reset</button>
+      <button className="navbtn util" onClick={onLogout}>⎋ Logout</button>
+    </div>
+  );
+  const statusFoot = (
+    <>
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 5, marginBottom: 3 }}>
+        <span style={{ width: 8, height: 8, borderRadius: "50%", background: online ? "#3FB873" : "#C9803A", display: "inline-block" }} />
+        {online ? "Online · syncing live" : "Offline · saved on this device"}
+      </span>
+      <br />
+      {user?.email ? <>Signed in as {user.email} · {ROLE_LABELS[role]}.<br /></> : null}
+      {can(role, "backup.use") ? "Back up regularly." : null}
+    </>
+  );
+
   return (
     <div className="app" data-theme={store.iconStyle} style={{ ...S.app, ...themeVars(store.theme) }}>
       <style>{CSS + SERVICE_ICON_CSS}</style>
       {/* The service-icon gradients, mounted once for the whole app. Only under the glass theme:
           the flat theme strokes in the current text colour and never references them. */}
       {store.iconStyle === "advanced" && <ServiceIconDefs />}
-      {/* sidebar */}
-      <nav className="nav" style={S.nav}>
+      {/* ── sidebar ──
+          Laptop and up: the full rail, exactly as before. Tablet: the same element collapsed to
+          icons by CSS, expandable over the page via data-open. Phone: display:none — the bottom
+          bar below takes over. It stays ONE element across all three so a nav entry is written
+          once; only its presentation changes. */}
+      <nav className="nav" style={S.nav} data-open={railOpen ? "1" : "0"}>
+        {/* Only rendered in the tablet band (CSS), where the rail is icon-only and needs a way
+            back to its labels. */}
+        <button
+          className="navbtn railtoggle"
+          onClick={() => setRailOpen((o) => !o)}
+          aria-expanded={railOpen}
+          aria-label={railOpen ? "Collapse menu" : "Expand menu"}
+          title={railOpen ? "Collapse menu" : "Expand menu"}
+        >☰</button>
         <div style={S.logo}>
           <img src={store.logo || LOGO_SRC} alt={store.name} style={{ width: 42, height: 42, borderRadius: 10, objectFit: "contain", background: "#fff", padding: 2, flexShrink: 0 }} />
-          <div>
+          <div className="navshop">
             <div style={{ fontWeight: 800, fontSize: 14.5, letterSpacing: "-0.02em" }}>{store.name}</div>
             <div style={{ fontSize: 10.5, color: "#9DB5A8", lineHeight: 1.3 }}>{store.address}</div>
           </div>
         </div>
         {myTopTabs.map(([k, ic, label]) => (
-          <button key={k} className={"navbtn" + (tab === k ? " active" : "")} onClick={() => setTab(k)}>
-            <span style={{ width: 22, display: "inline-block", textAlign: "center" }}>{ic}</span> {label}
-            {k === "inventory" && lowStock.length > 0 && (
-              <span style={S.badge}>{lowStock.length}</span>
-            )}
-          </button>
+          <NavButton key={k} icon={ic} label={label} active={tab === k} badge={tabBadge(k)} onClick={() => goTab(k)} />
         ))}
         {/* "Other" group — collapses the secondary sections. Auto-opens when one of its
             tabs is active so the current page is always visible in the rail. Hidden outright
@@ -1537,58 +1686,102 @@ function StoreManager({ user, role, onLogout }) {
             className={"navbtn" + (showOther ? " active" : "")}
             onClick={() => setOtherOpen((o) => !o)}
             aria-expanded={showOther}
+            title="Other"
           >
-            <span style={{ width: 22, display: "inline-block", textAlign: "center" }}>⋯</span> Other
-            <span style={{ marginLeft: "auto", fontSize: 11, opacity: 0.8 }}>{showOther ? "▾" : "▸"}</span>
-            {!showOther && tabEnabled("alerts") && alertCount > 0 && <span style={S.badge}>{alertCount}</span>}
+            <span className="navico" style={{ width: 22, display: "inline-block", textAlign: "center" }}>⋯</span>
+            <span className="navlabel">Other</span>
+            <span className="navchev" style={{ marginLeft: "auto", fontSize: 11, opacity: 0.8 }}>{showOther ? "▾" : "▸"}</span>
+            {!showOther && tabEnabled("alerts") && alertCount > 0 && <span className="badge-n" style={S.badge}>{alertCount}</span>}
           </button>
         )}
         {showOther && myOtherTabs.map(([k, ic, label]) => (
-          <button key={k} className={"navbtn sub" + (tab === k ? " active" : "")} onClick={() => setTab(k)}>
-            <span style={{ width: 22, display: "inline-block", textAlign: "center" }}>{ic}</span> {label}
-            {k === "alerts" && alertCount > 0 && (
-              <span style={S.badge}>{alertCount}</span>
-            )}
-          </button>
+          <NavButton key={k} icon={ic} label={label} active={tab === k} badge={tabBadge(k)} sub onClick={() => goTab(k)} />
         ))}
         {/* Backup/Restore is owner-only: a restore rewrites the whole tree, and an export
             hands the entire salon's books to whoever is holding the phone. */}
-        {can(role, "backup.use") && (
-          <div style={{ marginTop: "auto", padding: "8px 8px 4px" }}>
-            <div style={{ fontSize: 10.5, color: "#6E8A7C", textTransform: "uppercase", letterSpacing: ".06em", padding: "0 6px 4px" }}>Backup</div>
-            <div style={{ display: "flex", gap: 6 }}>
-              <button className="navbtn util" onClick={() => exportData("json")}>⬇ JSON</button>
-              <button className="navbtn util" onClick={() => exportData("xlsx")}>⬇ XLSX</button>
-            </div>
-            <label className="navbtn util" style={{ cursor: "pointer", marginTop: 6 }}>
-              ⬆ Restore (JSON / XLSX)
-              <input type="file" accept=".json,.xlsx,.xls,application/json" onChange={importData} style={{ display: "none" }} />
-            </label>
-          </div>
-        )}
+        {can(role, "backup.use") && backupBlock({ first: true })}
         {/* Pushes the footer down when the Backup block above (which normally carries the
             margin-top:auto) is hidden for this role. */}
-        <div style={{ display: "flex", gap: 6, padding: "8px 8px 4px", marginTop: can(role, "backup.use") ? 0 : "auto" }}>
-          <button className="navbtn util" onClick={resetMyPassword}>🔑 Reset</button>
-          <button className="navbtn util" onClick={onLogout}>⎋ Logout</button>
-        </div>
-        <div style={{ fontSize: 11, color: "#6E8A7C", padding: "6px 14px 8px" }}>
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 5, marginBottom: 3 }}>
-            <span style={{ width: 8, height: 8, borderRadius: "50%", background: online ? "#3FB873" : "#C9803A", display: "inline-block" }} />
-            {online ? "Online · syncing live" : "Offline · saved on this device"}
-          </span>
-          <br />
-          {user?.email ? <>Signed in as {user.email} · {ROLE_LABELS[role]}.<br /></> : null}
-          {can(role, "backup.use") ? "Back up regularly." : null}
-        </div>
+        {accountBlock({ pushDown: !can(role, "backup.use") })}
+        <div className="navfoot" style={{ fontSize: 11, color: "#6E8A7C", padding: "6px 14px 8px" }}>{statusFoot}</div>
       </nav>
+      {/* Scrim behind the expanded tablet rail: it overlays the page, so a tap anywhere else
+          has to put it away again. */}
+      {railOpen && isTabletRail && (
+        <div className="rail-scrim" onClick={() => setRailOpen(false)} aria-hidden="true" />
+      )}
+
+      {/* ── phone top bar ──
+          Carries the shop's identity, which the bottom bar has no room for, and doubles as the
+          at-a-glance sync light so the pill at the bottom isn't the only place it lives. */}
+      {isPhone && (
+        <header className="topbar">
+          <img src={store.logo || LOGO_SRC} alt="" aria-hidden="true" style={{ width: 30, height: 30, borderRadius: 8, objectFit: "contain", background: "#fff", padding: 2, flexShrink: 0 }} />
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ fontWeight: 800, fontSize: 14, letterSpacing: "-0.02em", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{store.name}</div>
+          </div>
+          <span
+            title={online ? "Online · syncing live" : "Offline · saved on this device"}
+            style={{ width: 9, height: 9, borderRadius: "50%", flexShrink: 0, background: online ? "#3FB873" : "#C9803A" }}
+          />
+        </header>
+      )}
 
       {/* main */}
-      <main className="main" style={S.main}>
+      <main className={"main" + (tab === "appointments" ? " wide" : "")} style={S.main}>
         {!loaded ? <div style={{ padding: 40, color: "#667" }}>Loading salon data…</div> : view}
       </main>
 
-      {toast && <div style={S.toast}>{toast}</div>}
+      {/* ── phone bottom bar ──
+          Four tabs plus "More", pinned within thumb reach. The badge on "More" aggregates the
+          counts of every tab hidden inside it, so a low-stock warning is never invisible just
+          because Inventory didn't make the bar. */}
+      {isPhone && (
+        <nav className="tabbar" aria-label="Main">
+          {phoneTabs.map(([k, ic, label]) => (
+            <button
+              key={k}
+              className={"tabbtn" + (tab === k ? " active" : "")}
+              onClick={() => goTab(k)}
+              aria-current={tab === k ? "page" : undefined}
+            >
+              <span className="tabico" aria-hidden="true">{ic}</span>
+              <span className="tablabel">{PHONE_TAB_LABELS[k] || label}</span>
+              {tabBadge(k) > 0 && <span className="tabbadge">{tabBadge(k)}</span>}
+            </button>
+          ))}
+          <button
+            className={"tabbtn" + (moreOpen || sheetTabs.some(([k]) => k === tab) ? " active" : "")}
+            onClick={() => setMoreOpen((o) => !o)}
+            aria-expanded={moreOpen}
+            aria-haspopup="menu"
+          >
+            <span className="tabico" aria-hidden="true">⋯</span>
+            <span className="tablabel">More</span>
+            {!moreOpen && moreBadge > 0 && <span className="tabbadge">{moreBadge}</span>}
+          </button>
+        </nav>
+      )}
+
+      {/* ── the "More" sheet ──
+          Everything the bar couldn't fit, in rail order, plus the account actions that live at
+          the foot of the sidebar on a desktop. */}
+      {isPhone && moreOpen && (
+        <>
+          <div className="sheet-scrim" onClick={() => setMoreOpen(false)} aria-hidden="true" />
+          <div className="sheet" role="menu" aria-label="More">
+            <div className="sheet-grip" aria-hidden="true" />
+            {sheetTabs.map(([k, ic, label]) => (
+              <NavButton key={k} icon={ic} label={label} active={tab === k} badge={tabBadge(k)} onClick={() => goTab(k)} />
+            ))}
+            {can(role, "backup.use") && backupBlock({ first: false })}
+            {accountBlock({ pushDown: false })}
+            <div style={{ fontSize: 11, color: "var(--text-mid, #6E8A7C)", padding: "10px 14px 4px" }}>{statusFoot}</div>
+          </div>
+        </>
+      )}
+
+      {toast && <div className="toast" style={S.toast}>{toast}</div>}
 
       {/* Connection status on every screen, and the hard-stop popup when a write is tried offline. */}
       <ConnBadge online={online} />
@@ -1670,7 +1863,7 @@ function SendFailedModal({ message, onClose }) {
 // pulses the moment the connection drops, since that now blocks every save.
 const ConnBadge = ({ online }) => (
   <div
-    className={online ? undefined : "connbadge-off"}
+    className={"connbadge" + (online ? "" : " connbadge-off")}
     style={{ ...S.connBadge, ...(online ? S.connOn : S.connOff) }}
     role="status" aria-live="polite"
     title={online ? "Connected — changes save live" : "No internet — changes are blocked until you reconnect"}
@@ -1748,12 +1941,12 @@ function WorkerDashboard({ sales, appointments, customers, staff, services, user
       <Header title="Today" sub={niceDate}>
         <button className="btn primary big" onClick={goBilling}>Start billing</button>
       </Header>
-      <div style={S.cards}>
+      <div className="cards" style={S.cards}>
         <Card label="Your bills today" value={mine.length} sub="rung up on this account" />
         <Card label="You billed" value={INR(myTotal)} sub="total across your bills today" accent />
         <Card label="In the diary" value={dayStats(appointments, date).total} sub="appointments today" />
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 16 }}>
+      <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 16 }}>
         <TodayAppointments appointments={appointments} customers={customers} staff={staff} services={services} date={date} goAppointments={goAppointments} />
         <section style={S.panel}>
           <div style={S.panelHead}>Your bills today</div>
@@ -1849,7 +2042,7 @@ function Dashboard({ items, sales, lowStock, goBilling, appointments = [], custo
           <input type="date" className="input" style={{ width: "auto", marginLeft: 4 }} value={date} max={todayStr()} onChange={(e) => setDate(e.target.value)} />
         </label>
       </Header>
-      <div style={S.cards}>
+      <div className="cards" style={S.cards}>
         <Card label={isToday ? "Today's sales" : "Sales (this day)"} value={INR(rev)} sub={daySales.length + " bills" + (dayUdhari > 0 ? ` · ${INR(dayUdhari)} on udhari` : "")} />
         <Card label={isToday ? "Today's profit" : "Profit (this day)"} value={<>{INR(profit)} <span style={{ fontSize: 14, fontWeight: 700, opacity: 0.85 }}>({rev > 0 ? Math.round((profit / rev) * 100) : 0}%)</span></>} sub="after item cost · % of sales" accent />
         <Card label={monthName + " revenue"} value={INR(monthRev)} sub={"month to date" + (monthUdhari > 0 ? ` · ${INR(monthUdhari)} on udhari` : "")} />
@@ -1881,7 +2074,7 @@ function Dashboard({ items, sales, lowStock, goBilling, appointments = [], custo
       <div style={{ fontSize: 13, fontWeight: 800, color: "var(--ink)", letterSpacing: ".02em", margin: "22px 0 8px" }}>
         Monthly overview <span style={{ fontWeight: 500, color: "var(--text-mid, #8A9C90)" }}>(from May 2026)</span>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+      <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
         <ChartCard title="Monthly revenue" height={220}>
           <BarChart data={monthly} margin={{ top: 16, right: 8, left: -8, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#EEF3EE" />
@@ -1931,7 +2124,7 @@ function Dashboard({ items, sales, lowStock, goBilling, appointments = [], custo
       </div>
 
       <div style={{ fontSize: 12, fontWeight: 700, color: "#4A5D52", margin: "10px 0 6px" }}>Day wise</div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+      <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
         <ChartCard title="Day wise revenue" height={220}>
           <BarChart data={dailySeries} margin={{ top: 16, right: 8, left: -8, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#EEF3EE" />
@@ -1966,7 +2159,7 @@ function Dashboard({ items, sales, lowStock, goBilling, appointments = [], custo
       </div>
 
       <div style={{ fontSize: 12, fontWeight: 700, color: "#4A5D52", margin: "18px 0 6px" }}>Week wise <span style={{ fontWeight: 500, color: "var(--text-mid, #8A9C90)" }}>(week starting Mon)</span></div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+      <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
         <ChartCard title="Week wise revenue" height={220}>
           <BarChart data={weeklySeries} margin={{ top: 16, right: 8, left: -8, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#EEF3EE" />
@@ -2012,7 +2205,7 @@ function Dashboard({ items, sales, lowStock, goBilling, appointments = [], custo
         </ChartCard>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 16 }}>
+      <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 16 }}>
         <section style={S.panel}>
           <div style={S.panelHead}>
             Low stock — reorder soon
@@ -2182,6 +2375,20 @@ function CustomerPicker({ customers, value, onPick, onCreate, notify }) {
 // recording packageRedemptions on the bill; the shell derives usesLeft from that.
 function Billing({ items, sales, services, staff, customers, customerPackages, config, setItems, setSales, setCustomers, store = STORE, notify, log, role, user, guardOnline = () => true, prefill, onPrefillUsed, onBilled }) {
   const [q, setQ] = useState("");
+  // Phone-only running-total bar. The receipt pane is a screen further down once the two panes
+  // stack, and `receiptVisible` is what stops the bar duplicating a total that is already on
+  // screen. IntersectionObserver is guarded: jsdom has none, and without it the bar simply stays
+  // put — visible-but-redundant is a far better failure than a crashed till.
+  const isPhone = useMediaQuery(MQ.phone);
+  const receiptRef = useRef(null);
+  const [receiptVisible, setReceiptVisible] = useState(false);
+  useEffect(() => {
+    const node = receiptRef.current;
+    if (!node || typeof IntersectionObserver !== "function") return undefined;
+    const io = new IntersectionObserver(([e]) => setReceiptVisible(e.isIntersecting), { threshold: 0.12 });
+    io.observe(node);
+    return () => io.disconnect();
+  }, []);
   const [cart, setCart] = useState([]); // {id, lineType, name, icon, unit, sellPrice, buyPrice, qty, staffId?}
   const [lastSale, setLastSale] = useState(null);
   const [saleDate, setSaleDate] = useState(todayStr()); // back-date a bill if needed
@@ -2638,6 +2845,22 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
 
   return (
     <div>
+      {/* Phone: a running total pinned above the tab bar. The two panes are side by side on a
+          desktop, so the bill is always in view while you tap the catalogue; stacked on a phone
+          it is a screen further down, and a till you have to scroll to check is a till that gets
+          rung up wrong. Tapping it jumps to the bill. It hides itself once the bill is actually
+          on screen, so the total is never shown twice. */}
+      {isPhone && cart.length > 0 && !receiptVisible && (
+        <button
+          className="cartbar"
+          onClick={() => receiptRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
+        >
+          <span className="cartbar-n">{cart.reduce((n, l) => n + (l.qty || 1), 0)}</span>
+          <span style={{ flex: 1, textAlign: "left" }}>Current bill</span>
+          <span style={{ fontWeight: 800, fontSize: 16 }}>{INR(total)}</span>
+          <span aria-hidden="true">↓</span>
+        </button>
+      )}
       <Header title="Billing" sub={mode === "service" ? "Tap a service to add it to the bill" : "Tap a product to add it to the bill"}>
         {can(role, "billing.backdate") ? (
           <label style={{ fontSize: 12, color: saleDate === todayStr() ? "var(--text-mid, #6B7E74)" : "#C44536", fontWeight: 600 }}>
@@ -2649,7 +2872,7 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
           <span style={{ fontSize: 12, color: "var(--text-mid, #6B7E74)" }}>Bill date · {saleDate}</span>
         )}
       </Header>
-      <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 16 }}>
+      <div className="g-split" style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 16 }}>
         {/* service / item picker */}
         <section style={S.panel}>
           {/* A salon bill is mostly services with the odd retail add-on, so the two halves of
@@ -2697,7 +2920,7 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
                     <ServiceIconChip icon={CATEGORY_FALLBACK[category] || "defaultService"} size={32} />
                     {category}
                   </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                     {list.map((s) => (
                       <div key={s.id} className="pick" style={{ cursor: "pointer" }} onClick={() => addService(s)}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -2722,10 +2945,15 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
             <span style={{ fontSize: 11.5, fontWeight: 700, color: "#465", whiteSpace: "nowrap" }}>🧾 Misc</span>
             <input ref={miscNameRef} className="input" style={{ flex: 1, minWidth: 90 }} placeholder="Name" value={miscName} onChange={(e) => setMiscName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addMisc(); }} aria-label="Item name" />
             <input className="input" style={{ flex: 1, minWidth: 100 }} placeholder="Barcode (optional)" value={miscCode} onChange={(e) => setMiscCode(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addMisc(); }} aria-label="Item barcode (optional)" title="Barcode (optional) — scan or type so this item scans next time" />
-            <input className="input" style={{ width: 86 }} type="number" min="0" step="0.01" placeholder="₹ sell" value={miscPrice} onChange={(e) => setMiscPrice(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addMisc(); }} aria-label="Item sell price" />
+            <input className="input" style={{ width: 86 }} type="number" inputMode="decimal" min="0" step="0.01" placeholder="₹ sell" value={miscPrice} onChange={(e) => setMiscPrice(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addMisc(); }} aria-label="Item sell price" />
             <button className="btn" onClick={addMisc}>+ Add</button>
+            {/* The barcode field's title= said this, and a title is invisible on a touchscreen —
+                which is most of where this row gets used. */}
+            <div style={{ flexBasis: "100%", fontSize: 11, color: "var(--text-mid, #8A9C90)" }}>
+              Adding a barcode catalogues the item so it scans straight into a bill next time.
+            </div>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
             {results.map((i) => {
               const inStock = (i.stock || 0) > 0;
               const editing = stockFor === i.id;
@@ -2740,7 +2968,7 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
                   </div>
                   {editing && (
                     <div onClick={(e) => e.stopPropagation()} style={{ display: "flex", gap: 6, marginTop: 8, alignItems: "center" }}>
-                      <input className="input" style={{ padding: "5px 7px", width: 64 }} type="number" min="1" autoFocus placeholder="Qty" value={stockQty}
+                      <input className="input" style={{ padding: "5px 7px", width: 64 }} type="number" inputMode="decimal" min="1" autoFocus placeholder="Qty" value={stockQty}
                         onChange={(e) => setStockQty(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") quickRestock(i); }} />
                       <button className="btn small primary" onClick={() => quickRestock(i)}>Add</button>
                       <button className="btn small ghost" aria-label="Cancel" onClick={() => { setStockFor(null); setStockQty(""); }}>✕</button>
@@ -2756,7 +2984,7 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
         </section>
 
         {/* receipt cart */}
-        <section style={S.receipt}>
+        <section ref={receiptRef} style={S.receipt}>
           <div style={S.receiptHead}>CURRENT BILL</div>
 
           {/* Who the bill is for. Optional — a walk-in who won't leave a number must never be
@@ -2819,7 +3047,7 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
                   {["₹", "%"].map((m) => (
                     <button key={m} className={"btn small " + (discMode === m ? "primary" : "ghost")} style={{ minWidth: 30 }} onClick={() => setDiscMode(m)} aria-label={m === "₹" ? "Discount in rupees" : "Discount in percent"}>{m}</button>
                   ))}
-                  <input className="input" style={{ width: 74 }} type="number" min="0" step="0.01" max={discMode === "%" ? 100 : subtotal} placeholder="0" value={discount} onChange={(e) => setDiscount(e.target.value)} aria-label="Additional discount amount" />
+                  <input className="input" style={{ width: 74 }} type="number" inputMode="decimal" min="0" step="0.01" max={discMode === "%" ? 100 : subtotal} placeholder="0" value={discount} onChange={(e) => setDiscount(e.target.value)} aria-label="Additional discount amount" />
                 </div>
               </div>
               {discountAmt > 0 && (
@@ -2844,7 +3072,7 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
                   <div style={{ display: "flex", gap: 4, marginLeft: "auto", alignItems: "center" }}>
                     <button className="btn small ghost" onClick={() => setRedeemPts(String(maxPts))} title={`Use the most allowed (${maxPts})`}>Max</button>
                     <input
-                      className="input" style={{ width: 74 }} type="number" min="0" max={maxPts} step="1"
+                      className="input" style={{ width: 74 }} type="number" inputMode="decimal" min="0" max={maxPts} step="1"
                       placeholder="0" value={redeemPts} onChange={(e) => setRedeemPts(e.target.value)}
                       aria-label="Points to redeem"
                     />
@@ -2893,7 +3121,7 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
                   customer is picked they're redundant, and showing both invites two versions of
                   the same person on one bill. */}
               {!picked && (
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 8 }}>
+                <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 8 }}>
                   <div style={{ position: "relative" }}>
                     <input className="input" autoComplete="off" placeholder={pay === "Udhari" ? "Customer name (owes)" : "Name (optional)"} value={customer}
                       onChange={(e) => setCustomer(e.target.value)}
@@ -2920,7 +3148,7 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
               {pay === "Udhari" && (
                 <div style={{ marginTop: 8 }}>
                   <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                    <input className="input" style={{ flex: 1 }} type="number" min="0" step="0.01" max={total} placeholder="Paid now (optional)" value={paidNow} onChange={(e) => setPaidNow(e.target.value)} aria-label="Amount paid now" />
+                    <input className="input" style={{ flex: 1 }} type="number" inputMode="decimal" min="0" step="0.01" max={total} placeholder="Paid now (optional)" value={paidNow} onChange={(e) => setPaidNow(e.target.value)} aria-label="Amount paid now" />
                     <button className="btn small ghost" onClick={() => setPaidNow(String(total))}>Full</button>
                   </div>
                   {+paidNow > 0 && (
@@ -3272,12 +3500,12 @@ function Inventory({ items, setItems, notify, log, cats = CATEGORIES, onAddCateg
         </select>
       </td>
       <td onClick={stop}><input className="input" style={{ padding: "6px 4px" }} type="date" max={todayStr()} value={d.createdAt} onChange={(e) => sf("createdAt", e.target.value)} aria-label="Added date" /></td>
-      <td onClick={stop}><input className="input" style={{ padding: "6px 8px", width: 76, textAlign: "right" }} type="number" min="0" step="0.01" value={d.buyPrice} onChange={(e) => sf("buyPrice", e.target.value)} aria-label="Buy price" /></td>
-      <td onClick={stop}><input className="input" style={{ padding: "6px 8px", width: 76, textAlign: "right" }} type="number" min="0" step="0.01" value={d.sellPrice} onChange={(e) => sf("sellPrice", e.target.value)} aria-label="Sell price" /></td>
+      <td onClick={stop}><input className="input" style={{ padding: "6px 8px", width: 76, textAlign: "right" }} type="number" inputMode="decimal" min="0" step="0.01" value={d.buyPrice} onChange={(e) => sf("buyPrice", e.target.value)} aria-label="Buy price" /></td>
+      <td onClick={stop}><input className="input" style={{ padding: "6px 8px", width: 76, textAlign: "right" }} type="number" inputMode="decimal" min="0" step="0.01" value={d.sellPrice} onChange={(e) => sf("sellPrice", e.target.value)} aria-label="Sell price" /></td>
       <td style={{ textAlign: "right", color: "var(--brand)" }}>{+d.buyPrice > 0 ? Math.round(((+d.sellPrice - +d.buyPrice) / +d.buyPrice) * 100) + "%" : "—"}</td>
       <td onClick={stop}>
         <div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
-          <input className="input" style={{ padding: "6px 8px", width: 60, textAlign: "right" }} type="number" min="0" value={d.stock} onChange={(e) => sf("stock", e.target.value)} aria-label="Stock" />
+          <input className="input" style={{ padding: "6px 8px", width: 60, textAlign: "right" }} type="number" inputMode="decimal" min="0" value={d.stock} onChange={(e) => sf("stock", e.target.value)} aria-label="Stock" />
           <select className="input" style={{ padding: "6px 4px" }} value={d.unit} onChange={(e) => sf("unit", e.target.value)} aria-label="Unit">
             {UNITS.map((u) => <option key={u}>{u}</option>)}
           </select>
@@ -3382,7 +3610,7 @@ function Inventory({ items, setItems, notify, log, cats = CATEGORIES, onAddCateg
                               <tbody>
                                 {batchEdit.rows.map((b) => (
                                   <tr key={b.id}>
-                                    <td><input className="input" style={{ padding: "6px 8px", width: 80 }} type="number" min="0" value={b.qty} onChange={(e) => setBatchField(b.id, "qty", e.target.value)} aria-label="Batch quantity" /></td>
+                                    <td><input className="input" style={{ padding: "6px 8px", width: 80 }} type="number" inputMode="decimal" min="0" value={b.qty} onChange={(e) => setBatchField(b.id, "qty", e.target.value)} aria-label="Batch quantity" /></td>
                                     <td><input className="input" style={{ padding: "6px 8px" }} type="date" value={b.expiry} onChange={(e) => setBatchField(b.id, "expiry", e.target.value)} aria-label="Batch expiry" /></td>
                                     <td><input className="input" style={{ padding: "6px 8px" }} type="date" max={todayStr()} value={b.addedOn} onChange={(e) => setBatchField(b.id, "addedOn", e.target.value)} aria-label="Date added" /></td>
                                     <td><button className="btn small danger" aria-label="Remove batch" onClick={() => removeBatchRow(b.id)}>✕</button></td>
@@ -3464,7 +3692,7 @@ function Inventory({ items, setItems, notify, log, cats = CATEGORIES, onAddCateg
               Separate multiple barcodes with “<b>;</b>” — scanning auto-adds it. Add as many as you like; the first is the item's default.
             </div>
           </Field>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <Field label="Category">
               <div style={{ display: "flex", gap: 6 }}>
                 <select className="input" style={{ flex: 1 }} value={form.category} onChange={(e) => { const c = e.target.value; setForm((f) => ({ ...f, category: c, categoryTouched: true, icon: isAutoIcon(f.icon, f.category) ? iconFor(c) : f.icon })); }}>
@@ -3485,12 +3713,12 @@ function Inventory({ items, setItems, notify, log, cats = CATEGORIES, onAddCateg
               </select>
             </Field>
             <Field label="Icon (emoji)"><input className="input" value={form.icon} onChange={(e) => setForm({ ...form, icon: e.target.value })} placeholder={iconFor(form.category)} /></Field>
-            <Field label="MRP (₹)"><input className="input" type="number" min="0" step="0.01" value={form.mrp} onChange={(e) => setForm({ ...form, mrp: e.target.value })} /></Field>
-            <Field label="Buying price (₹)"><input className="input" type="number" min="0" step="0.01" value={form.buyPrice} onChange={(e) => setForm({ ...form, buyPrice: e.target.value })} /></Field>
-            <Field label="Selling price (₹)"><input className="input" type="number" min="0" step="0.01" value={form.sellPrice} onChange={(e) => setForm({ ...form, sellPrice: e.target.value })} /></Field>
-            <Field label={form.id ? "Stock quantity" : "Opening stock"}><input className="input" type="number" min="0" value={form.stock} onChange={(e) => setForm({ ...form, stock: e.target.value })} /></Field>
+            <Field label="MRP (₹)"><input className="input" type="number" inputMode="decimal" min="0" step="0.01" value={form.mrp} onChange={(e) => setForm({ ...form, mrp: e.target.value })} /></Field>
+            <Field label="Buying price (₹)"><input className="input" type="number" inputMode="decimal" min="0" step="0.01" value={form.buyPrice} onChange={(e) => setForm({ ...form, buyPrice: e.target.value })} /></Field>
+            <Field label="Selling price (₹)"><input className="input" type="number" inputMode="decimal" min="0" step="0.01" value={form.sellPrice} onChange={(e) => setForm({ ...form, sellPrice: e.target.value })} /></Field>
+            <Field label={form.id ? "Stock quantity" : "Opening stock"}><input className="input" type="number" inputMode="decimal" min="0" value={form.stock} onChange={(e) => setForm({ ...form, stock: e.target.value })} /></Field>
             <Field label={form.id ? "Expiry (for added stock)" : "Expiry (optional)"}><input className="input" type="date" value={form.expiry} onChange={(e) => setForm({ ...form, expiry: e.target.value })} /></Field>
-            <Field label="Alert when stock below"><input className="input" type="number" min="0" value={form.lowAt} onChange={(e) => setForm({ ...form, lowAt: e.target.value })} /></Field>
+            <Field label="Alert when stock below"><input className="input" type="number" inputMode="decimal" min="0" value={form.lowAt} onChange={(e) => setForm({ ...form, lowAt: e.target.value })} /></Field>
           </div>
           {form.id && <div style={{ fontSize: 12, color: "var(--text-mid, #6B7E74)", marginTop: 8 }}>Changing stock here adjusts batches automatically (increase adds a batch using the expiry above; decrease removes earliest-expiry stock first). For a specific dated batch, use <b>Restock</b>.</div>}
           <button className="btn primary big" style={{ width: "100%", marginTop: 14 }} onClick={save}>
@@ -3502,7 +3730,7 @@ function Inventory({ items, setItems, notify, log, cats = CATEGORIES, onAddCateg
       {restock && (
         <Modal title={"Restock — " + restock.name} onClose={() => setRestock(null)}>
           <Field label="Quantity to add">
-            <input className="input" type="number" min="0" autoFocus value={restock.qty} onChange={(e) => setRestock({ ...restock, qty: e.target.value })} />
+            <input className="input" type="number" inputMode="decimal" min="0" autoFocus value={restock.qty} onChange={(e) => setRestock({ ...restock, qty: e.target.value })} />
           </Field>
           <Field label="Expiry date (optional)">
             <input className="input" type="date" value={restock.expiry} onChange={(e) => setRestock({ ...restock, expiry: e.target.value })} />
@@ -3657,7 +3885,7 @@ function BarcodeCreator({ items, setItems, store = STORE, notify, log }) {
   return (
     <div>
       <Header title="Barcode Creator" sub="Generate scannable barcode labels to paste on shelf items" />
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+      <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
         <section style={S.panel}>
           <div style={S.panelHead}>Label details</div>
 
@@ -3670,20 +3898,20 @@ function BarcodeCreator({ items, setItems, store = STORE, notify, log }) {
 
           <Field label="Product name"><input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Amul Butter 100g" /></Field>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 10, alignItems: "end" }}>
+          <div className="g-split" style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 10, alignItems: "end" }}>
             <Field label="Barcode value"><input className="input" value={code} onChange={(e) => setCode(e.target.value)} placeholder="Scan, type, or generate" /></Field>
             <button className="btn" style={{ marginBottom: 10 }} onClick={() => setCode(genCode(format))}>Generate</button>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <Field label="Symbology">
               <select className="input" value={format} onChange={(e) => setFormat(e.target.value)}>
                 <option value="CODE128">Code 128 (any text)</option>
                 <option value="EAN13">EAN-13 (13 digits)</option>
               </select>
             </Field>
-            <Field label="MRP (₹)"><input className="input" type="number" min="0" step="0.01" value={mrp} onChange={(e) => setMrp(e.target.value)} /></Field>
-            <Field label="Selling price (₹)"><input className="input" type="number" min="0" step="0.01" value={sell} onChange={(e) => setSell(e.target.value)} /></Field>
+            <Field label="MRP (₹)"><input className="input" type="number" inputMode="decimal" min="0" step="0.01" value={mrp} onChange={(e) => setMrp(e.target.value)} /></Field>
+            <Field label="Selling price (₹)"><input className="input" type="number" inputMode="decimal" min="0" step="0.01" value={sell} onChange={(e) => setSell(e.target.value)} /></Field>
             <Field label="Packaged date"><input className="input" type="date" max={todayStr()} value={pkd} onChange={(e) => setPkd(e.target.value)} /></Field>
             <Field label="Expiry date"><input className="input" type="date" value={exp} onChange={(e) => setExp(e.target.value)} /></Field>
           </div>
@@ -3694,19 +3922,19 @@ function BarcodeCreator({ items, setItems, store = STORE, notify, log }) {
             ))}
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <Field label="Label size">
               <select className="input" value={size} onChange={(e) => setSize(e.target.value)}>
                 {Object.entries(LABEL_SIZES).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
                 <option value="custom">Custom…</option>
               </select>
             </Field>
-            <Field label="How many labels"><input className="input" type="number" min="1" max="300" value={qty} onChange={(e) => setQty(e.target.value)} /></Field>
+            <Field label="How many labels"><input className="input" type="number" inputMode="decimal" min="1" max="300" value={qty} onChange={(e) => setQty(e.target.value)} /></Field>
           </div>
           {size === "custom" && (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <Field label="Width (mm)"><input className="input" type="number" min="15" max="200" value={cw} onChange={(e) => setCw(e.target.value)} /></Field>
-              <Field label="Height (mm)"><input className="input" type="number" min="10" max="200" value={ch} onChange={(e) => setCh(e.target.value)} /></Field>
+            <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <Field label="Width (mm)"><input className="input" type="number" inputMode="decimal" min="15" max="200" value={cw} onChange={(e) => setCw(e.target.value)} /></Field>
+              <Field label="Height (mm)"><input className="input" type="number" inputMode="decimal" min="10" max="200" value={ch} onChange={(e) => setCh(e.target.value)} /></Field>
             </div>
           )}
 
@@ -3943,7 +4171,7 @@ function RawData({ items, setItems, setSales, setExpenses, notify, log }) {
         </button>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1.4fr", gap: 16 }}>
+      <div className="g-split" style={{ display: "grid", gridTemplateColumns: "1fr 1.4fr", gap: 16 }}>
         <section style={S.panel}>
           <div style={S.panelHead}>1 · Provide data</div>
           <label className="btn primary" style={{ display: "block", textAlign: "center", padding: "14px", cursor: "pointer", opacity: busy ? 0.6 : 1 }}>
@@ -4000,7 +4228,7 @@ function RawData({ items, setItems, setSales, setExpenses, notify, log }) {
                     {rows.map((r, i) => (
                       <tr key={i}>
                         <td><input className="input" style={{ padding: "6px 8px" }} value={r.name} placeholder="e.g. Electricity bill" onChange={(e) => edit(i, "name", e.target.value)} /></td>
-                        <td><input className="input" style={{ padding: "6px 8px" }} type="number" min="0" step="0.01" value={r.amount} onChange={(e) => edit(i, "amount", e.target.value)} /></td>
+                        <td><input className="input" style={{ padding: "6px 8px" }} type="number" inputMode="decimal" min="0" step="0.01" value={r.amount} onChange={(e) => edit(i, "amount", e.target.value)} /></td>
                         <td><input className="input" style={{ padding: "6px 8px" }} type="date" max={todayStr()} value={r.date || ""} onChange={(e) => edit(i, "date", e.target.value)} /></td>
                         <td><button className="btn small danger" aria-label="Remove row" onClick={() => drop(i)}>✕</button></td>
                       </tr>
@@ -4023,7 +4251,7 @@ function RawData({ items, setItems, setSales, setExpenses, notify, log }) {
                     {rows.map((r, i) => (
                       <tr key={i}>
                         <td><input className="input" style={{ padding: "6px 8px" }} value={r.name} onChange={(e) => edit(i, "name", e.target.value)} /></td>
-                        <td><input className="input" style={{ padding: "6px 8px" }} type="number" min="0" value={r.qty} onChange={(e) => edit(i, "qty", +e.target.value)} /></td>
+                        <td><input className="input" style={{ padding: "6px 8px" }} type="number" inputMode="decimal" min="0" value={r.qty} onChange={(e) => edit(i, "qty", +e.target.value)} /></td>
                         {mode === "inventory" ? (
                           <>
                             <td>
@@ -4031,12 +4259,12 @@ function RawData({ items, setItems, setSales, setExpenses, notify, log }) {
                                 {UNITS.map((u) => <option key={u}>{u}</option>)}
                               </select>
                             </td>
-                            <td><input className="input" style={{ padding: "6px 8px" }} type="number" min="0" step="0.01" value={r.buyPrice} onChange={(e) => edit(i, "buyPrice", e.target.value)} /></td>
-                            <td><input className="input" style={{ padding: "6px 8px" }} type="number" min="0" step="0.01" value={r.sellPrice} onChange={(e) => edit(i, "sellPrice", e.target.value)} /></td>
+                            <td><input className="input" style={{ padding: "6px 8px" }} type="number" inputMode="decimal" min="0" step="0.01" value={r.buyPrice} onChange={(e) => edit(i, "buyPrice", e.target.value)} /></td>
+                            <td><input className="input" style={{ padding: "6px 8px" }} type="number" inputMode="decimal" min="0" step="0.01" value={r.sellPrice} onChange={(e) => edit(i, "sellPrice", e.target.value)} /></td>
                             <td><input className="input" style={{ padding: "6px 8px" }} type="date" value={r.expiry || ""} onChange={(e) => edit(i, "expiry", e.target.value)} /></td>
                           </>
                         ) : (
-                          <td><input className="input" style={{ padding: "6px 8px" }} type="number" min="0" step="0.01" value={r.amount} onChange={(e) => edit(i, "amount", e.target.value)} /></td>
+                          <td><input className="input" style={{ padding: "6px 8px" }} type="number" inputMode="decimal" min="0" step="0.01" value={r.amount} onChange={(e) => edit(i, "amount", e.target.value)} /></td>
                         )}
                         <td><button className="btn small danger" aria-label="Remove row" onClick={() => drop(i)}>✕</button></td>
                       </tr>
@@ -4486,7 +4714,7 @@ function SalesHistory({ sales, items, staff, services = [], customerPackages = [
 
       {editing && (
         <Modal title="Edit bill" onClose={closeEdit}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <Field label="Date"><input type="date" className="input" max={todayStr()} value={editing.date} onChange={(e) => setEditing({ ...editing, date: e.target.value })} /></Field>
             <Field label="Payment">
               <select className="input" value={editing.payment} onChange={(e) => setEditing({ ...editing, payment: e.target.value })}>
@@ -4500,7 +4728,7 @@ function SalesHistory({ sales, items, staff, services = [], customerPackages = [
               {editing.lines.map((l, idx) => (
                 <tr key={idx}>
                   <td>{l.name}<div style={{ fontSize: 11, color: "#9AA" }}>{INR(l.price)}/{l.unit}</div></td>
-                  <td><input className="input" style={{ padding: "6px 8px" }} type="number" min="0" value={l.qty} onChange={(e) => editLine(idx, +e.target.value)} /></td>
+                  <td><input className="input" style={{ padding: "6px 8px" }} type="number" inputMode="decimal" min="0" value={l.qty} onChange={(e) => editLine(idx, +e.target.value)} /></td>
                   <td style={{ textAlign: "right", fontWeight: 700 }}>{INR(money(l.price * l.qty))}</td>
                   <td><button className="btn small danger" aria-label="Remove line" onClick={() => removeLine(idx)}>✕</button></td>
                 </tr>
@@ -4544,14 +4772,17 @@ function SalesHistory({ sales, items, staff, services = [], customerPackages = [
               <span style={{ fontSize: 11.5, fontWeight: 700, color: "#465", whiteSpace: "nowrap" }}>🧾 New</span>
               <input className="input" style={{ flex: 1, minWidth: 90 }} placeholder="Name" value={newName} onChange={(e) => setNewName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addNewItem(); }} aria-label="New item name" />
               <input className="input" style={{ flex: 1, minWidth: 100 }} placeholder="Barcode (optional)" value={newCode} onChange={(e) => setNewCode(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addNewItem(); }} aria-label="New item barcode (optional)" title="Barcode (optional) — scan or type so this item scans at billing next time" />
-              <input className="input" style={{ width: 86 }} type="number" min="0" step="0.01" placeholder="₹ sell" value={newPrice} onChange={(e) => setNewPrice(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addNewItem(); }} aria-label="New item sell price" />
+              <input className="input" style={{ width: 86 }} type="number" inputMode="decimal" min="0" step="0.01" placeholder="₹ sell" value={newPrice} onChange={(e) => setNewPrice(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addNewItem(); }} aria-label="New item sell price" />
               <button className="btn" onClick={addNewItem}>+ Add</button>
             </div>
-            <div style={{ fontSize: 11, color: "var(--text-mid, #8A9C90)", marginTop: 6 }}>New items are catalogued (opening stock {OPENING_STOCK}); the quantity on this bill is deducted from stock when you save.</div>
+            {/* Says out loud what the barcode field's title= used to say. A title is invisible on
+                a touchscreen, so on the devices this row is most used on, that guidance did not
+                exist at all. */}
+            <div style={{ fontSize: 11, color: "var(--text-mid, #8A9C90)", marginTop: 6 }}>New items are catalogued (opening stock {OPENING_STOCK}); the quantity on this bill is deducted from stock when you save. Adding a barcode lets it scan straight into a bill next time.</div>
           </div>
 
           <Field label="Additional discount (₹)">
-            <input className="input" type="number" min="0" step="0.01" max={editSubtotal} placeholder="0" value={editing.discount} onChange={(e) => setEditing({ ...editing, discount: e.target.value })} />
+            <input className="input" type="number" inputMode="decimal" min="0" step="0.01" max={editSubtotal} placeholder="0" value={editing.discount} onChange={(e) => setEditing({ ...editing, discount: e.target.value })} />
           </Field>
           {editDiscount > 0 && (
             <>
@@ -4564,7 +4795,7 @@ function SalesHistory({ sales, items, staff, services = [], customerPackages = [
             <div style={{ marginTop: 8 }}>
               <Field label="Amount paid (mark repayments here)">
                 <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                  <input className="input" style={{ flex: 1 }} type="number" min="0" step="0.01" max={editTotal} value={editing.paid} onChange={(e) => setEditing({ ...editing, paid: e.target.value })} />
+                  <input className="input" style={{ flex: 1 }} type="number" inputMode="decimal" min="0" step="0.01" max={editTotal} value={editing.paid} onChange={(e) => setEditing({ ...editing, paid: e.target.value })} />
                   <button className="btn small ghost" onClick={() => setEditing({ ...editing, paid: String(editTotal) })}>Mark fully paid</button>
                 </div>
               </Field>
@@ -4604,7 +4835,7 @@ function SalesHistory({ sales, items, staff, services = [], customerPackages = [
               {splitting.parts.map((p, idx) => (
                 <tr key={idx}>
                   <td><input type="date" className="input" style={{ padding: "6px 8px" }} max={todayStr()} value={p.date} onChange={(e) => setPartDate(idx, e.target.value)} /></td>
-                  <td><input type="number" min="0" step="0.01" className="input" style={{ padding: "6px 8px", textAlign: "right" }} value={p.amount} onChange={(e) => setPartAmount(idx, +e.target.value)} /></td>
+                  <td><input type="number" inputMode="decimal" min="0" step="0.01" className="input" style={{ padding: "6px 8px", textAlign: "right" }} value={p.amount} onChange={(e) => setPartAmount(idx, +e.target.value)} /></td>
                   <td><button className="btn small danger" disabled={splitting.parts.length <= 2} aria-label="Remove part" onClick={() => removePart(idx)}>✕</button></td>
                 </tr>
               ))}
@@ -5029,7 +5260,7 @@ function Finance({ sales, expenses }) {
         </div>
       )}
 
-      <div style={S.cards}>
+      <div className="cards" style={S.cards}>
         <Card label="Revenue" value={INR(revenue)} sub={pSales.length + " bills"} />
         <Card label="Gross profit" value={INR(grossProfit)} sub="sales − item cost" />
         <Card label="Expenses" value={INR(expTotal)} sub={pExp.length + " entries"} />
@@ -5048,7 +5279,7 @@ function Finance({ sales, expenses }) {
         </ChartCard>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginTop: 16 }}>
+      <div className="g3" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginTop: 16 }}>
         {[
           { key: "revenue", title: "Revenue", color: "#1b5e43" },
           { key: "profit", title: "Profit", color: "#E8A33D" },
@@ -5066,7 +5297,7 @@ function Finance({ sales, expenses }) {
         ))}
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 16, marginTop: 16 }}>
+      <div className="g-split" style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 16, marginTop: 16 }}>
         <ChartCard title="Revenue & profit over time">
           <AreaChart data={series} margin={{ top: 8, right: 8, left: -8, bottom: 0 }}>
             <defs>
@@ -5096,7 +5327,7 @@ function Finance({ sales, expenses }) {
         </ChartCard>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 16 }}>
+      <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 16 }}>
         <ChartCard title="Revenue vs expenses">
           <BarChart data={series} margin={{ top: 8, right: 8, left: -8, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#EEF3EE" />
@@ -5115,7 +5346,7 @@ function Finance({ sales, expenses }) {
           ) : (
             <BarChart data={topItems} layout="vertical" margin={{ top: 4, right: 12, left: 8, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#EEF3EE" horizontal={false} />
-              <XAxis type="number" tick={{ fontSize: 11, fill: "#678" }} tickFormatter={inrTick} />
+              <XAxis type="number" inputMode="decimal" tick={{ fontSize: 11, fill: "#678" }} tickFormatter={inrTick} />
               <YAxis type="category" dataKey="name" tick={{ fontSize: 10.5, fill: "#465" }} width={110} />
               <Tooltip formatter={(v) => INR(v)} />
               <Bar dataKey="value" name="Revenue" fill="#2A6FB0" radius={[0, 3, 3, 0]} />
@@ -5292,7 +5523,7 @@ function Stats({ sales, expenses, items, customers = [], appointments = [] }) {
       )}
 
       {/* ---- KPI row (first four follow the date range; last four are "as of now") ---- */}
-      <div style={S.cards}>
+      <div className="cards" style={S.cards}>
         <Card label="Revenue" value={formatINR(sum.revenue)} sub={sum.bills + " bills"} />
         <Card label="Trading profit" value={formatINR(sum.profit)} sub={`${sum.margin}% margin`} accent />
         <Card label="Margin" value={sum.margin + "%"} sub="profit ÷ revenue" />
@@ -5339,7 +5570,7 @@ function Stats({ sales, expenses, items, customers = [], appointments = [] }) {
               business: the labour/retail split, whether customers come back, and whether the
               reminders are earning their keep. */}
           <div style={sectionHead}>The salon</div>
-          <div style={S.cards}>
+          <div className="cards" style={S.cards}>
             <Card label="Service revenue" value={INR(svcSplit.service)} sub={`${svcSplit.servicePct}% of takings`} accent />
             <Card label="Retail revenue" value={INR(svcSplit.product)} sub={`${money(100 - svcSplit.servicePct)}% of takings`} />
             <Card label="Customers who came back" value={`${repeat.pct}%`} sub={`${repeat.repeat} of ${repeat.identified} identified · walk-ins excluded`} />
@@ -5351,7 +5582,7 @@ function Stats({ sales, expenses, items, customers = [], appointments = [] }) {
             />
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 16 }}>
+          <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 16 }}>
             <ChartCard title="Where the money comes from" height={240}>
               {svcMix.length === 0 ? <Empty text="No sales in this period." /> : (
                 <PieChart>
@@ -5368,7 +5599,7 @@ function Stats({ sales, expenses, items, customers = [], appointments = [] }) {
               {topSvc.length === 0 ? <Empty text="No services billed in this period." /> : (
                 <BarChart data={topSvc} layout="vertical" margin={{ top: 4, right: 40, left: 4, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#EEF3EE" horizontal={false} />
-                  <XAxis type="number" tick={{ fontSize: 11, fill: "#678" }} tickFormatter={metric === "qty" ? undefined : inrCompact} />
+                  <XAxis type="number" inputMode="decimal" tick={{ fontSize: 11, fill: "#678" }} tickFormatter={metric === "qty" ? undefined : inrCompact} />
                   <YAxis type="category" dataKey="name" tick={{ fontSize: 10.5, fill: "#465" }} width={110} />
                   <Tooltip formatter={(v, n, p) => (metric === "qty" ? [`${v} done`, p.payload.name] : [formatINR(v), p.payload.name])} />
                   <Bar dataKey={metric === "qty" ? "count" : "revenue"} fill="#2A6FB0" radius={[0, 3, 3, 0]}
@@ -5378,7 +5609,7 @@ function Stats({ sales, expenses, items, customers = [], appointments = [] }) {
             </ChartCard>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 16 }}>
+          <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 16 }}>
             <ChartCard title="New vs returning customers" height={240}>
               {newRet.length === 0 ? <Empty text="No identified customers yet." /> : (
                 <BarChart data={newRet} margin={{ top: 16, right: 8, left: -8, bottom: 0 }}>
@@ -5406,7 +5637,7 @@ function Stats({ sales, expenses, items, customers = [], appointments = [] }) {
             </ChartCard>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 16 }}>
+          <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 16 }}>
             <ChartCard title="Customer lifetime value (all time)" height={240}>
               <BarChart data={ltv} margin={{ top: 16, right: 8, left: -8, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#EEF3EE" />
@@ -5438,7 +5669,7 @@ function Stats({ sales, expenses, items, customers = [], appointments = [] }) {
           </section>
 
           <div style={sectionHead}>Products & payment</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 16 }}>
+          <div className="g-split" style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 16 }}>
             <section style={S.panel}>
               <div style={{ ...S.panelHead, flexWrap: "wrap", gap: 6 }}>
                 Top 15 items
@@ -5459,7 +5690,7 @@ function Stats({ sales, expenses, items, customers = [], appointments = [] }) {
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={topProducts} layout="vertical" margin={{ top: 4, right: 54, left: 8, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#EEF3EE" horizontal={false} />
-                      <XAxis type="number" tick={{ fontSize: 10.5, fill: "#678" }} tickFormatter={metric === "qty" ? undefined : inrCompact} />
+                      <XAxis type="number" inputMode="decimal" tick={{ fontSize: 10.5, fill: "#678" }} tickFormatter={metric === "qty" ? undefined : inrCompact} />
                       <YAxis type="category" dataKey="name" tick={{ fontSize: 10, fill: "#465" }} width={116} interval={0} />
                       <Tooltip formatter={(v) => (metric === "qty" ? v : formatINR(v))} />
                       <Bar dataKey={metric} name={metricLabel[metric]} fill="#3DA17A" radius={[0, 3, 3, 0]} label={metric === "qty" ? qtyLabelRight : compactLabelRight} />
@@ -5508,7 +5739,7 @@ function Stats({ sales, expenses, items, customers = [], appointments = [] }) {
           </div>
 
           <div style={sectionHead}>Credit & recovery</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+          <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
             <ChartCard title="Udhari outstanding over time">
               <AreaChart data={udhariSeries} margin={{ top: 8, right: 10, left: -6, bottom: 0 }}>
                 <defs>
@@ -5557,7 +5788,7 @@ function Stats({ sales, expenses, items, customers = [], appointments = [] }) {
               <div style={{ fontSize: 12.5, color: "var(--panelhead, #3A5547)", marginBottom: 8 }}>
                 One-time setup / capital of <b>{formatINR(expSum)}</b> across {pExp.length} {pExp.length === 1 ? "entry" : "entries"} — investment, not an operating cost, so it never reduces trading profit.
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16 }}>
+              <div className="g-split" style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16 }}>
                 <ChartCard title="Capital deployed by month">
                   <BarChart data={expMonthly} margin={{ top: 16, right: 10, left: -6, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#EEF3EE" />
@@ -5573,7 +5804,7 @@ function Stats({ sales, expenses, items, customers = [], appointments = [] }) {
                     <ResponsiveContainer width="100%" height="100%">
                       <BarChart data={expBreak.rows} layout="vertical" margin={{ top: 4, right: 54, left: 8, bottom: 0 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#EEF3EE" horizontal={false} />
-                        <XAxis type="number" tick={{ fontSize: 10.5, fill: "#678" }} tickFormatter={inrCompact} />
+                        <XAxis type="number" inputMode="decimal" tick={{ fontSize: 10.5, fill: "#678" }} tickFormatter={inrCompact} />
                         <YAxis type="category" dataKey="name" tick={{ fontSize: 10, fill: "#465" }} width={112} interval={0} />
                         <Tooltip formatter={(v) => formatINR(v)} />
                         <Bar dataKey="value" name="Spent" fill="#B0762A" radius={[0, 3, 3, 0]} label={compactLabelRight} />
@@ -5586,7 +5817,7 @@ function Stats({ sales, expenses, items, customers = [], appointments = [] }) {
           )}
 
           <div style={sectionHead}>Inventory</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 16 }}>
+          <div className="g-split" style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 16 }}>
             <section style={S.panel}>
               <div style={{ ...S.panelHead, flexWrap: "wrap", gap: 6 }}>
                 Stock value by category
@@ -5778,7 +6009,7 @@ function Udhari({ sales, setSales, notify, log }) {
   return (
     <div>
       <Header title="Udhari / Credit" sub="Outstanding credit by customer, across all time." />
-      <div style={S.cards}>
+      <div className="cards" style={S.cards}>
         <Card label="Outstanding credit" value={INR(udhari.totalOutstanding)} sub={udhari.withDue.length + " customer(s) owe"} accent />
         <Card label="Udhari bills" value={udhari.count} sub="total credit bills" />
         <Card label="Top debtor" value={udhari.withDue[0] ? udhari.withDue[0].name : "—"} sub={udhari.withDue[0] ? INR(udhari.withDue[0].outstanding) : "—"} />
@@ -5895,8 +6126,8 @@ function Udhari({ sales, setSales, notify, log }) {
         // Close only when the press STARTS on the backdrop itself. Using onClick here would
         // also fire when a drag/tap that began inside the input releases over the backdrop,
         // closing the modal mid-payment.
-        <div style={S.overlay} onMouseDown={(e) => { if (e.target === e.currentTarget) setPaying(null); }}>
-          <div style={S.modal}>
+        <div className="overlay" style={S.overlay} onMouseDown={(e) => { if (e.target === e.currentTarget) setPaying(null); }}>
+          <div className="modal" style={S.modal}>
             <h2 style={{ fontSize: 17, margin: "0 0 4px" }}>{paying.type === "customer" ? "Pay total" : "Pay"}</h2>
             <div style={{ fontSize: 13, color: "#566", marginBottom: 14 }}>
               {paying.type === "customer" ? (
@@ -5912,7 +6143,7 @@ function Udhari({ sales, setSales, notify, log }) {
             </div>
             <Field label="Amount received">
               <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                <input className="input" style={{ flex: 1 }} type="number" min="0" step="0.01" max={payOut} value={payAmt} onChange={(e) => setPayAmt(e.target.value)} autoFocus aria-label="Amount received" />
+                <input className="input" style={{ flex: 1 }} type="number" inputMode="decimal" min="0" step="0.01" max={payOut} value={payAmt} onChange={(e) => setPayAmt(e.target.value)} autoFocus aria-label="Amount received" />
                 <button className="btn small ghost" onClick={() => setPayAmt(String(payOut))}>Full</button>
               </div>
             </Field>
@@ -6080,14 +6311,14 @@ function VendorBills({ bills, setBills, setDailyBills, online, notify, log }) {
         {!online && <span style={{ fontSize: 11.5, color: "#C9803A" }}>Offline — proof upload needs internet</span>}
       </Header>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1.5fr", gap: 16, alignItems: "start" }}>
+      <div className="g-split" style={{ display: "grid", gridTemplateColumns: "1fr 1.5fr", gap: 16, alignItems: "start" }}>
         {/* add / edit form */}
         <section style={S.panel}>
           <div style={S.panelHead}>{editId ? "Edit bill" : "New bill"}</div>
           <Field label="Vendor name"><input className="input" value={form.vendor} onChange={(e) => setForm({ ...form, vendor: e.target.value })} placeholder="e.g. Sharma Wholesale" /></Field>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <Field label="Bill date"><input className="input" type="date" max={todayStr()} value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></Field>
-            <Field label="Amount (₹)"><input className="input" type="number" min="0" step="0.01" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} /></Field>
+            <Field label="Amount (₹)"><input className="input" type="number" inputMode="decimal" min="0" step="0.01" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} /></Field>
             <Field label="Category">
               <select className="input" value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}>
                 {BILL_CATEGORIES.map((c) => <option key={c}>{c}</option>)}
@@ -6098,7 +6329,7 @@ function VendorBills({ bills, setBills, setDailyBills, online, notify, log }) {
                 {BILL_STATUS.map((s) => <option key={s} value={s}>{s[0].toUpperCase() + s.slice(1)}</option>)}
               </select>
             </Field>
-            {form.status === "partial" && <Field label="Paid so far (₹)"><input className="input" type="number" min="0" step="0.01" value={form.paidAmount} onChange={(e) => setForm({ ...form, paidAmount: e.target.value })} /></Field>}
+            {form.status === "partial" && <Field label="Paid so far (₹)"><input className="input" type="number" inputMode="decimal" min="0" step="0.01" value={form.paidAmount} onChange={(e) => setForm({ ...form, paidAmount: e.target.value })} /></Field>}
             {form.status !== "paid" && <Field label="Due date (optional)"><input className="input" type="date" value={form.dueDate} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} /></Field>}
           </div>
           <Field label={editId ? "Replace proof (optional)" : "Bill proof (optional)"}>
@@ -6134,7 +6365,7 @@ function VendorBills({ bills, setBills, setDailyBills, online, notify, log }) {
             {(from || to || vq || statusF !== "all" || catF !== "All") && <button className="btn ghost small" onClick={() => { setFrom(""); setTo(""); setVq(""); setStatusF("all"); setCatF("All"); }}>Clear</button>}
           </div>
 
-          <div style={S.cards}>
+          <div className="cards" style={S.cards}>
             <Card label="Total spend" value={INR(totalSpend)} sub={filtered.length + " bills"} />
             <Card label="Outstanding" value={INR(outstanding)} sub="unpaid + partial" accent />
             <Card label="Top vendor" value={topVendorName || "—"} sub={topVendors[0] ? INR(topVendors[0].value) : "—"} />
@@ -6182,7 +6413,7 @@ function VendorBills({ bills, setBills, setDailyBills, online, notify, log }) {
       </div>
 
       {filtered.length > 0 && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginTop: 16 }}>
+        <div className="g3" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginTop: 16 }}>
           <ChartCard title="Spend by month">
             <BarChart data={monthly} margin={{ top: 8, right: 8, left: -8, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#EEF3EE" />
@@ -6195,7 +6426,7 @@ function VendorBills({ bills, setBills, setDailyBills, online, notify, log }) {
           <ChartCard title="Top vendors by spend">
             <BarChart data={topVendors} layout="vertical" margin={{ top: 4, right: 12, left: 8, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#EEF3EE" horizontal={false} />
-              <XAxis type="number" tick={{ fontSize: 11, fill: "#678" }} tickFormatter={inrTick} />
+              <XAxis type="number" inputMode="decimal" tick={{ fontSize: 11, fill: "#678" }} tickFormatter={inrTick} />
               <YAxis type="category" dataKey="name" tick={{ fontSize: 10.5, fill: "#465" }} width={110} />
               <Tooltip formatter={(v) => INR(v)} />
               <Bar dataKey="value" name="Spend" fill="#2A6FB0" radius={[0, 3, 3, 0]} />
@@ -6204,7 +6435,7 @@ function VendorBills({ bills, setBills, setDailyBills, online, notify, log }) {
           <ChartCard title="Spend by category">
             <BarChart data={byCategory} layout="vertical" margin={{ top: 4, right: 12, left: 8, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#EEF3EE" horizontal={false} />
-              <XAxis type="number" tick={{ fontSize: 11, fill: "#678" }} tickFormatter={inrTick} />
+              <XAxis type="number" inputMode="decimal" tick={{ fontSize: 11, fill: "#678" }} tickFormatter={inrTick} />
               <YAxis type="category" dataKey="name" tick={{ fontSize: 10.5, fill: "#465" }} width={96} />
               <Tooltip formatter={(v) => INR(v)} />
               <Bar dataKey="value" name="Spend" fill="#3DA17A" radius={[0, 3, 3, 0]} />
@@ -6269,12 +6500,12 @@ function Expenses({ expenses, setExpenses, notify, log }) {
         </div>
       </Header>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1.4fr", gap: 16 }}>
+      <div className="g-split" style={{ display: "grid", gridTemplateColumns: "1fr 1.4fr", gap: 16 }}>
         <section style={S.panel}>
           <div style={S.panelHead}>New expense</div>
           <Field label="Description"><input className="input" autoFocus value={exp.desc} onChange={(e) => setExp({ ...exp, desc: e.target.value })} placeholder="e.g. Electricity bill" /></Field>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <Field label="Amount (₹)"><input className="input" type="number" min="0" step="0.01" value={exp.amount} onChange={(e) => setExp({ ...exp, amount: e.target.value })} /></Field>
+          <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="Amount (₹)"><input className="input" type="number" inputMode="decimal" min="0" step="0.01" value={exp.amount} onChange={(e) => setExp({ ...exp, amount: e.target.value })} /></Field>
             <Field label="Date"><input className="input" type="date" max={todayStr()} value={exp.date} onChange={(e) => setExp({ ...exp, date: e.target.value })} /></Field>
           </div>
           <button className="btn primary big" style={{ width: "100%", marginTop: 8 }} onClick={addExp}>Record expense</button>
@@ -6296,7 +6527,7 @@ function Expenses({ expenses, setExpenses, notify, log }) {
                   <tr key={e.id}>
                     <td><input className="input" style={{ padding: "6px 8px" }} type="date" max={todayStr()} value={editing.date} onChange={(ev) => setEditing({ ...editing, date: ev.target.value })} /></td>
                     <td><input className="input" style={{ padding: "6px 8px" }} value={editing.desc} onChange={(ev) => setEditing({ ...editing, desc: ev.target.value })} /></td>
-                    <td><input className="input" style={{ padding: "6px 8px", textAlign: "right" }} type="number" min="0" step="0.01" value={editing.amount} onChange={(ev) => setEditing({ ...editing, amount: ev.target.value })} /></td>
+                    <td><input className="input" style={{ padding: "6px 8px", textAlign: "right" }} type="number" inputMode="decimal" min="0" step="0.01" value={editing.amount} onChange={(ev) => setEditing({ ...editing, amount: ev.target.value })} /></td>
                     <td style={{ whiteSpace: "nowrap" }}>
                       <button className="btn small primary" aria-label="Save" onClick={saveEdit}>✓</button>{" "}
                       <button className="btn small ghost" aria-label="Cancel" onClick={() => setEditing(null)}>✕</button>
@@ -6454,13 +6685,13 @@ function StoreConfig({ config, setConfig, notify, log, user, role }) {
         </div>
       </Header>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, alignItems: "start" }}>
+      <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, alignItems: "start" }}>
         <section style={S.panel}>
           <div style={S.panelHead}>Shop identity</div>
           <Field label="Shop name"><input className="input" value={draft.name} placeholder={STORE.name} onChange={(e) => set("name", e.target.value)} /></Field>
           <Field label="Tagline"><input className="input" value={draft.tagline} placeholder={STORE.tagline} onChange={(e) => set("tagline", e.target.value)} /></Field>
           <Field label="Address"><textarea className="input" rows={3} style={{ resize: "vertical" }} value={draft.address} placeholder={STORE.address} onChange={(e) => set("address", e.target.value)} /></Field>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <Field label="Phone"><input className="input" type="tel" value={draft.phone} placeholder="e.g. +91 98765 43210" onChange={(e) => set("phone", e.target.value)} /></Field>
             <Field label="Shop PC IP address">
               <input className="input" value={draft.pcIp} placeholder="e.g. 192.168.1.50" onChange={(e) => set("pcIp", e.target.value)} />
@@ -6472,7 +6703,7 @@ function StoreConfig({ config, setConfig, notify, log, user, role }) {
           </div>
 
           <div style={{ ...S.panelHead, marginTop: 16 }}>Working hours</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <Field label="Opens at"><input className="input" type="time" step={900} value={draft.openTime} onChange={(e) => set("openTime", e.target.value)} /></Field>
             <Field label="Closes at"><input className="input" type="time" step={900} value={draft.closeTime} onChange={(e) => set("closeTime", e.target.value)} /></Field>
           </div>
@@ -6486,7 +6717,7 @@ function StoreConfig({ config, setConfig, notify, log, user, role }) {
           <div style={S.panelHead}>Branding &amp; receipt</div>
           <ImageField label="Shop logo" keyName="logo" maxDim={240} fallback={LOGO_SRC} hint="shown in the sidebar, on the sign-in card and at the top of receipts" />
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <Field label="UPI ID (amount QR)">
               <input className="input" value={draft.upiId} placeholder="e.g. mysalon@okhdfcbank" onChange={(e) => set("upiId", e.target.value)} />
             </Field>
@@ -6548,7 +6779,10 @@ function StoreConfig({ config, setConfig, notify, log, user, role }) {
                 style={{
                   display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", borderRadius: 12, minHeight: 44,
                   border: active ? "2px solid var(--accent, var(--brand))" : "1.5px solid var(--border, #DDE8DE)",
-                  background: "var(--bg-base, #fff)", backgroundImage: "var(--bg-gradient, none)",
+                  // backgroundColor, not `background` — see the note on S.app. This preview tile
+                  // is the appearance picker itself, so it of all things has to show the real
+                  // ground colour of the theme it is offering.
+                  backgroundColor: "var(--bg-base, #fff)", backgroundImage: "var(--bg-gradient, none)",
                   cursor: "pointer", fontFamily: "inherit", textAlign: "left", flex: "1 1 200px",
                 }}
               >
@@ -6648,7 +6882,7 @@ function LoyaltyConfig({ config, setConfig, notify, log }) {
 
       {draft.enabled && (
         <>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <Field label="Points earned per ₹100 spent"><input className="input" inputMode="decimal" value={draft.earnRate} onChange={(e) => set("earnRate", e.target.value)} /></Field>
             <Field label="A point is worth (₹)"><input className="input" inputMode="decimal" value={draft.redeemValue} onChange={(e) => set("redeemValue", e.target.value)} /></Field>
             <Field label="Minimum points to redeem"><input className="input" inputMode="numeric" value={draft.minRedeemPoints} onChange={(e) => set("minRedeemPoints", e.target.value)} /></Field>
@@ -6660,7 +6894,7 @@ function LoyaltyConfig({ config, setConfig, notify, log }) {
           </div>
 
           <div style={S.panelHead}>Tiers <span style={{ fontWeight: 400, color: "var(--text-mid, #8A9C90)" }}>· by spend over the last 12 months</span></div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+          <div className="g3" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
             <Field label="Silver from (₹)"><input className="input" inputMode="numeric" value={draft.silver} onChange={(e) => set("silver", e.target.value)} /></Field>
             <Field label="Gold from (₹)"><input className="input" inputMode="numeric" value={draft.gold} onChange={(e) => set("gold", e.target.value)} /></Field>
             <Field label="Platinum from (₹)"><input className="input" inputMode="numeric" value={draft.platinum} onChange={(e) => set("platinum", e.target.value)} /></Field>
@@ -6706,7 +6940,20 @@ function Appointments({
     closeMin: parseHM(config?.closeTime) || DEFAULT_HOURS.closeMin,
   }), [config?.openTime, config?.closeTime]);
 
-  const columns = useMemo(() => activeStaff(staff), [staff]);
+  const allColumns = useMemo(() => activeStaff(staff), [staff]);
+  // On a phone the diary shows ONE stylist at a time. Five 140px columns behind a 56px time
+  // gutter is 756px of grid on a 360px screen: everything worth reading is off to the right, and
+  // finding a free slot means scrolling sideways through columns you weren't asking about. The
+  // grid itself is unchanged — it just gets handed one column — so the sideways scroll is still
+  // there for a tablet, where several stylists do fit.
+  const isPhone = useMediaQuery(MQ.phone);
+  const [soloStaff, setSoloStaff] = useState("");
+  // Falls back to the first stylist whenever the chosen one is deactivated or not yet picked, so
+  // the diary can never render zero columns while staff exist.
+  const solo = allColumns.find((s) => s.id === soloStaff) || allColumns[0];
+  // Memoised, not computed inline: `columns` feeds the useMemo that lays out the day's blocks,
+  // and a fresh array identity on every render would recompute that layout on every keystroke.
+  const columns = useMemo(() => (isPhone && solo ? [solo] : allColumns), [isPhone, solo, allColumns]);
   const slots = useMemo(() => slotsBetween(hours.openMin, hours.closeMin, SLOT_MIN), [hours]);
   const gridHeight = (hours.closeMin - hours.openMin) * PX_PER_MIN;
   const stats = useMemo(() => dayStats(appointments, date), [appointments, date]);
@@ -6807,6 +7054,34 @@ function Appointments({
           );
         })}
       </div>
+
+      {/* Phone only: which stylist's day is on screen. A scrolling chip row rather than a
+          <select>, so switching between two stylists is one tap and the colour dot that keys
+          the diary is visible in the switcher too. */}
+      {isPhone && allColumns.length > 1 && (
+        <div style={{ display: "flex", gap: 6, marginBottom: 10, overflowX: "auto", paddingBottom: 2 }} role="tablist" aria-label="Stylist">
+          {allColumns.map((s) => {
+            const on = s.id === solo?.id;
+            return (
+              <button
+                key={s.id}
+                role="tab"
+                aria-selected={on}
+                onClick={() => setSoloStaff(s.id)}
+                className="btn small"
+                style={{
+                  flex: "0 0 auto", display: "inline-flex", alignItems: "center", gap: 6,
+                  background: on ? "var(--brand)" : "var(--btn-bg, var(--brand-soft))",
+                  color: on ? "#fff" : "var(--btn-fg, var(--brand-soft-text))",
+                }}
+              >
+                <span style={{ width: 9, height: 9, borderRadius: "50%", background: s.color, display: "inline-block", flexShrink: 0 }} />
+                {s.name}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       <section style={{ ...S.panel, padding: 0, overflowX: "auto" }}>
         <div style={{ display: "grid", gridTemplateColumns: `56px repeat(${columns.length}, minmax(140px, 1fr))`, minWidth: 56 + columns.length * 140 }}>
@@ -6959,7 +7234,7 @@ function AppointmentModal({
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+      <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
         <Field label="Date"><input type="date" className="input" value={draft.date} onChange={(e) => set("date", e.target.value)} /></Field>
         <Field label="Staff">
           <select className="input" value={draft.staffId} onChange={(e) => set("staffId", e.target.value)}>
@@ -6972,7 +7247,7 @@ function AppointmentModal({
         </Field>
         {isBlock ? (
           <Field label="Length (minutes)">
-            <input className="input" type="number" min={SLOT_MIN} step={SLOT_MIN} value={draft.durationMin} onChange={(e) => set("durationMin", +e.target.value || SLOT_MIN)} />
+            <input className="input" type="number" inputMode="decimal" min={SLOT_MIN} step={SLOT_MIN} value={draft.durationMin} onChange={(e) => set("durationMin", +e.target.value || SLOT_MIN)} />
           </Field>
         ) : (
           <Field label="Ends">
@@ -7363,12 +7638,19 @@ function CustomerForm({ value, onChange, isNew, err }) {
   const year = todayStr().slice(0, 4);
   return (
     <>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+      <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
         <Field label="Phone">
           {isNew ? (
             <input className="input" type="tel" inputMode="numeric" autoFocus value={value.phone} onChange={(e) => set("phone", e.target.value)} />
           ) : (
-            <input className="input" value={formatPhone(value.phone)} disabled title="Phone is the customer's key and can't be changed" />
+            <>
+              <input className="input" value={formatPhone(value.phone)} disabled title="Phone is the customer's key and can't be changed" />
+              {/* Visible, not just a title: on a touchscreen there is no hover, so tapping a
+                  greyed-out field otherwise gives no reason why it won't take input. */}
+              <div style={{ fontSize: 11, color: "var(--text-mid, #8A9C90)", marginTop: 3 }}>
+                The phone number is this customer's key and can't be changed.
+              </div>
+            </>
           )}
         </Field>
         <Field label="Name"><input className="input" autoFocus={!isNew} value={value.name} onChange={(e) => set("name", e.target.value)} /></Field>
@@ -7959,7 +8241,7 @@ function Services({ services, setServices, items = [], notify, log }) {
 
       {editing && (
         <Modal title={editing === "new" ? "New service" : "Edit service"} onClose={close}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <div style={{ gridColumn: "1 / -1" }}>
               <Field label="Name"><input className="input" autoFocus value={form.name} onChange={(e) => set("name", e.target.value)} /></Field>
             </div>
@@ -8140,7 +8422,7 @@ function StaffPayouts({ staff, sales, store }) {
         </div>
       </section>
 
-      <div style={S.cards}>
+      <div className="cards" style={S.cards}>
         <Card label="Services done" value={totals.services} sub={monthLabel} />
         <Card label="Service revenue" value={INR(totals.revenue)} sub="what their work billed" />
         <Card label="Commission owed" value={INR(totals.commission)} sub={totals.revenue > 0 ? `${Math.round((totals.commission / totals.revenue) * 100)}% of service revenue` : "—"} accent />
@@ -8254,7 +8536,7 @@ function StaffPerformance({ staff, sales, appointments }) {
         </label>
       </section>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+      <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
         <ChartCard title="Revenue &amp; commission per stylist" height={260}>
           <BarChart data={perStaff} margin={{ top: 16, right: 8, left: -8, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#EEF3EE" />
@@ -8422,7 +8704,7 @@ function Packages({ packages, setPackages, customerPackages, setCustomerPackages
         <button className="btn primary big" onClick={startNew}>+ New package</button>
       </Header>
 
-      <div style={S.cards}>
+      <div className="cards" style={S.cards}>
         <Card label="Live packages" value={outstanding.length} sub="sold, with sessions left" />
         <Card label="Sessions owed" value={outstanding.reduce((a, cp) => a + cp.usesLeft, 0)} sub="work already paid for" />
         {/* The money already taken for work not yet done. Worth seeing: it's revenue that's
@@ -8497,7 +8779,7 @@ function Packages({ packages, setPackages, customerPackages, setCustomerPackages
       {editing && (
         <Modal title={editing === "new" ? "New package" : "Edit package"} onClose={close}>
           <Field label="Name"><input className="input" autoFocus placeholder="e.g. 6 Facials" value={form.name} onChange={(e) => set("name", e.target.value)} /></Field>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+          <div className="g3" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
             <Field label="Sessions"><input className="input" type="number" min="1" value={form.totalUses} onChange={(e) => set("totalUses", e.target.value)} /></Field>
             <Field label="Price (₹)"><input className="input" inputMode="decimal" value={form.price} onChange={(e) => set("price", e.target.value)} /></Field>
             <Field label="Valid (days)"><input className="input" type="number" min="1" value={form.validityDays} onChange={(e) => set("validityDays", e.target.value)} /></Field>
@@ -8648,7 +8930,7 @@ function Staff({ staff, setStaff, sales, appointments, store, notify, log }) {
       {editing && (
         <Modal title={editing === "new" ? "Add staff" : "Edit staff"} onClose={close}>
           <Field label="Name"><input className="input" autoFocus value={form.name} onChange={(e) => set("name", e.target.value)} /></Field>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <Field label="Role"><input className="input" placeholder="e.g. Hair Stylist" value={form.role} onChange={(e) => set("role", e.target.value)} /></Field>
             <Field label="Phone"><input className="input" type="tel" value={form.phone} onChange={(e) => set("phone", e.target.value)} /></Field>
           </div>
@@ -8800,7 +9082,7 @@ function Users({ user, notify, log }) {
 
       {adding && (
         <div style={{ border: "1px solid #E2EAE3", borderRadius: 10, padding: 12, marginBottom: 14, background: "var(--surface-2, #F8FBF9)" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <Field label="Email"><input className="input" type="email" autoComplete="off" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} /></Field>
             <Field label="Name (optional)"><input className="input" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} /></Field>
             <Field label="Temporary password">
@@ -9031,13 +9313,53 @@ function Admin({ setItems, setSales, setExpenses, setLogs, sales, customers, set
   );
 }
 
+// One entry in the sidebar, the collapsed tablet rail, or the phone's "More" sheet.
+//
+// The label is wrapped in a span rather than left as a bare text node for one reason: the
+// tablet's icon-only rail hides it with CSS, and CSS cannot address a bare text node. The
+// title/aria-label carry the same text, so while the label is hidden the name is still there
+// for a long-press, a screen reader, and a keyboard user.
+const NavButton = ({ icon, label, active, badge = 0, sub = false, onClick }) => (
+  <button
+    className={"navbtn" + (sub ? " sub" : "") + (active ? " active" : "")}
+    onClick={onClick}
+    title={label}
+    aria-label={label}
+    aria-current={active ? "page" : undefined}
+  >
+    <span className="navico" aria-hidden="true" style={{ width: 22, display: "inline-block", textAlign: "center" }}>{icon}</span>
+    <span className="navlabel">{label}</span>
+    {badge > 0 && <span className="badge-n" style={S.badge}>{badge}</span>}
+  </button>
+);
+
+// Bottom-bar labels have roughly 68px on a 360px phone, so the rail's full names ("Billing
+// (POS)", "Sales History") would ellipsis into nonsense. These are the short forms; anything
+// not listed keeps its rail label, which is what the aria-label uses either way.
+const PHONE_TAB_LABELS = {
+  dashboard: "Home",
+  billing: "Bill",
+  appointments: "Diary",
+  customers: "Clients",
+  sales: "Sales",
+  services: "Menu",
+  inventory: "Stock",
+  reminders: "Remind",
+  udhari: "Credit",
+  expense: "Expense",
+  stats: "Stats",
+};
+
+// Page title plus that screen's actions. flexWrap is the load-bearing bit: several headers carry
+// four controls including a date field (Appointments), which on a 360px phone would otherwise
+// crush the title into two characters. Wrapped, the actions drop to their own full-width row.
 const Header = ({ title, sub, children }) => (
-  <div style={{ display: "flex", alignItems: "flex-end", marginBottom: 18, gap: 12 }}>
-    <div>
+  <div className="pagehead" style={{ display: "flex", alignItems: "flex-end", flexWrap: "wrap", marginBottom: 18, gap: 12 }}>
+    <div style={{ minWidth: 0 }}>
       <h1 style={{ margin: 0, fontSize: 24, letterSpacing: "-0.03em" }}>{title}</h1>
       {sub && <div style={{ color: "var(--text-mid, #6B7E74)", fontSize: 13, marginTop: 2 }}>{sub}</div>}
     </div>
-    <div style={{ marginLeft: "auto" }}>{children}</div>
+    <div className="pagehead-actions" style={{ marginLeft: "auto" }}>{children}</div>
   </div>
 );
 
@@ -9075,12 +9397,13 @@ function Modal({ title, children, onClose }) {
   }, [onClose]);
   return (
     <div
+      className="overlay"
       style={S.overlay}
       onMouseDown={(e) => { downOnOverlay.current = e.target === e.currentTarget; }}
       onClick={(e) => { if (e.target === e.currentTarget && downOnOverlay.current) onClose(); }}
       role="dialog" aria-modal="true" aria-label={title}
     >
-      <div style={S.modal}>
+      <div className="modal" style={S.modal}>
         <div style={{ display: "flex", alignItems: "center", marginBottom: 14 }}>
           <h2 style={{ margin: 0, fontSize: 17 }}>{title}</h2>
           <button className="btn ghost small" style={{ marginLeft: "auto" }} aria-label="Close dialog" onClick={onClose}>✕</button>
@@ -9093,17 +9416,33 @@ function Modal({ title, children, onClose }) {
 
 // ---------- styles ----------
 const S = {
-  app: { display: "flex", minHeight: "100vh", background: "var(--bg-base, var(--app-bg))", backgroundImage: "var(--bg-gradient, none)", backgroundAttachment: "fixed", fontFamily: "'Segoe UI', system-ui, -apple-system, sans-serif", color: "var(--text-hi, #1E2421)" },
-  nav: { width: 210, background: "var(--nav-bg, var(--ink))", color: "var(--nav-hi)", display: "flex", flexDirection: "column", gap: 4, padding: "16px 10px", position: "sticky", top: 0, height: "100vh", boxSizing: "border-box", overflowY: "auto", overflowX: "hidden" },
+  // minHeight/height/maxHeight deliberately live in the CSS block below, not here: they need the
+  // `100vh` → `100dvh` two-declaration fallback, and an inline style can only hold one value per
+  // property. (On iOS, `vh` is the tallest the viewport ever gets — a vh-sized rail is clipped by
+  // Safari's toolbar, and a vh-sized sheet hides its own last row.)
+  // backgroundColor, NOT the `background` shorthand — and this is load-bearing, not style.
+  // A shorthand whose value contains var() is stored as ONE pending-substitution value covering
+  // every longhand it owns; the browser cannot know which part the variable feeds until it is
+  // resolved. Setting `backgroundImage` immediately afterwards (as React does, in key order)
+  // therefore destroys the rest of that pending shorthand, and background-color comes out EMPTY.
+  // The Advanced theme's dark ground never painted: the white page showed through and its light
+  // text sat on white. Verified in Chrome's own CSSOM, not just jsdom. Longhands don't interfere.
+  app: { display: "flex", backgroundColor: "var(--bg-base, var(--app-bg))", backgroundImage: "var(--bg-gradient, none)", backgroundAttachment: "fixed", fontFamily: "'Segoe UI', system-ui, -apple-system, sans-serif", color: "var(--text-hi, #1E2421)" },
+  nav: { width: RAIL_WIDTH, background: "var(--nav-bg, var(--ink))", color: "var(--nav-hi)", display: "flex", flexDirection: "column", gap: 4, padding: "16px 10px", position: "sticky", top: 0, boxSizing: "border-box", overflowY: "auto", overflowX: "hidden" },
   logo: { display: "flex", gap: 10, alignItems: "center", padding: "4px 8px 18px" },
   logoMark: { width: 38, height: 38, borderRadius: 10, background: "#E8A33D", color: "var(--ink)", display: "grid", placeItems: "center", fontWeight: 800, fontSize: 17 },
-  main: { flex: 1, padding: "26px 30px", maxWidth: 1280, margin: "0 auto", width: "100%", boxSizing: "border-box" },
+  // Was 1280, which left a 27" monitor showing a strip with dead margins either side. CONTENT_MAX
+  // is wide enough for the calendar and the wide tables while text still wraps at a readable
+  // measure; a screen that wants the whole window opts out with `.main.wide` (Appointments).
+  main: { flex: 1, padding: "26px 30px", maxWidth: CONTENT_MAX, margin: "0 auto", width: "100%", boxSizing: "border-box" },
   cards: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 },
   card: { background: "var(--surface, #fff)", borderRadius: 14, padding: "16px 18px", border: "1px solid var(--border, #E2EAE3)" },
   panel: { background: "var(--surface, #fff)", borderRadius: 14, padding: 16, border: "1px solid var(--border, #E2EAE3)" },
   panelHead: { fontWeight: 800, fontSize: 13.5, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--panelhead, #3A5547)", fontFamily: "var(--font-display, inherit)", display: "flex", alignItems: "center", marginBottom: 10 },
   row: { display: "flex", justifyContent: "space-between", padding: "8px 2px", borderBottom: "1px dashed var(--row-line, #E5ECE6)", fontSize: 13.5 },
-  receipt: { background: "var(--receipt-bg, #FFFDF6)", borderRadius: 4, padding: "18px 16px", border: "1px solid var(--receipt-border, #E8E2CF)", boxShadow: "0 2px 10px rgba(40,60,40,.07)", alignSelf: "start", backgroundImage: "var(--receipt-lines, repeating-linear-gradient(transparent, transparent 27px, rgba(180,170,140,.12) 28px))" },
+  // backgroundColor for the same reason as S.app above: this entry also sets backgroundImage,
+  // and a var()-bearing `background` shorthand would be wiped out by it.
+  receipt: { backgroundColor: "var(--receipt-bg, #FFFDF6)", borderRadius: 4, padding: "18px 16px", border: "1px solid var(--receipt-border, #E8E2CF)", boxShadow: "0 2px 10px rgba(40,60,40,.07)", alignSelf: "start", backgroundImage: "var(--receipt-lines, repeating-linear-gradient(transparent, transparent 27px, rgba(180,170,140,.12) 28px))" },
   receiptHead: { textAlign: "center", fontWeight: 800, letterSpacing: "0.25em", fontSize: 12, color: "var(--receipthead-ink, #6B6347)", borderBottom: "2px dashed var(--receipt-rule, #D8D0B8)", paddingBottom: 10, marginBottom: 8 },
   rcptLine: { display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: "1px dotted var(--receipt-rule, #E0D9C4)" },
   rcptTotal: { display: "flex", justifyContent: "space-between", fontWeight: 800, fontSize: 18, paddingTop: 12, marginTop: 6, borderTop: "2px dashed var(--receipt-rule, #C9BF9F)" },
@@ -9117,8 +9456,13 @@ const S = {
   connOn: { background: "#DCFCE7", color: "#0F7A43", borderColor: "#7FDDA8" },
   connOff: { background: "#B3261E", color: "#fff", borderColor: "#fff" },
   overlay: { position: "fixed", inset: 0, background: "var(--overlay-bg, rgba(15,30,20,.45))", backdropFilter: "var(--scrim-blur, none)", WebkitBackdropFilter: "var(--scrim-blur, none)", display: "grid", placeItems: "center", zIndex: 50 },
-  modal: { background: "var(--modal-bg, #fff)", borderRadius: 16, padding: 20, width: "min(480px, 92vw)", maxHeight: "86vh", overflow: "auto", backdropFilter: "var(--modal-blur, none)", WebkitBackdropFilter: "var(--modal-blur, none)", boxShadow: "var(--glass-shadow, none)" },
+  modal: { background: "var(--modal-bg, #fff)", borderRadius: 16, padding: 20, width: "min(480px, 92vw)", overflow: "auto", backdropFilter: "var(--modal-blur, none)", WebkitBackdropFilter: "var(--modal-blur, none)", boxShadow: "var(--glass-shadow, none)" },
 };
+
+// Height of the phone bottom tab bar. Referenced by the bar itself, by the bottom padding that
+// keeps content from hiding underneath it, and by the fixed connection pill and toast that have
+// to sit above it — so it lives here rather than being typed into four rules.
+const TABBAR_H = 58;
 
 const CSS = `
   /* Theme palette. These are the DEFAULT (Emerald) values; StoreConfig's theme picker overrides
@@ -9175,6 +9519,17 @@ const CSS = `
     --qty-border:rgba(255,255,255,.20); --qty-bg:rgba(255,255,255,.05);
     --tbl-th:#B9AFA6; --tbl-head-line:rgba(255,255,255,.16);
     --tbl-line:rgba(255,255,255,.08); --tbl-row-hover:rgba(255,255,255,.05);
+    /* The pinned first column of a sideways-scrolling table. This one has to be OPAQUE — every
+       other surface here is a translucent glass fill, and a translucent pin would let the rest
+       of the row scroll visibly through it. Matched to the modal's ground, not to --surface. */
+    --tbl-sticky-bg:#241D2C;
+    /* Opaque grounds for the phone chrome. --nav-bg is only 72% opaque, which works for the
+       sidebar because the sidebar is the one surface allowed a backdrop-filter — it frosts what
+       sits behind it. The bottom bar, the top bar and the sheet all lie over SCROLLING content
+       and so are barred from blurring (the blur budget), which leaves 28% of the page reading
+       straight through them. These are the same colours, made solid. */
+    --bar-bg:#1B1522;
+    --sheet-bg:#241D2C;
     --blocked-fill:repeating-linear-gradient(45deg, rgba(255,255,255,.04), rgba(255,255,255,.04) 5px, rgba(255,255,255,.10) 5px, rgba(255,255,255,.10) 10px);
     --blocked-ink:var(--text-mid);
     /* Secondary surfaces: inner cards/rows/boxes that sit ON a panel, and the tinted callouts.
@@ -9187,6 +9542,13 @@ const CSS = `
     --receipt-bg:rgba(255,255,255,.05); --receipt-border:var(--glass-border);
     --receipt-lines:none; --receipthead-ink:#CDBF9A; --receipt-rule:rgba(255,255,255,.16);
   }
+  /* Shell sizing. The plain-vh line is the fallback for browsers without dvh (Safari < 15.4,
+     Chrome < 108); the dvh line wins wherever it is understood. This matters on iOS, where vh
+     resolves to the viewport at its TALLEST — a 100vh rail is therefore taller than the screen
+     whenever Safari's toolbar is expanded, and its last item sits underneath the chrome. */
+  .app { min-height:100vh; min-height:100dvh; }
+  .nav { height:100vh; height:100dvh; }
+  .modal { max-height:86vh; max-height:86dvh; }
   .navbtn { display:flex; align-items:center; gap:6px; width:100%; text-align:left; background:none; border:none; color:var(--nav-text); padding:10px 12px; border-radius:9px; font-size:13.5px; font-weight:600; cursor:pointer; position:relative; }
   .navbtn:hover { background:var(--nav-hover); color:#fff; }
   .navbtn.active { background:var(--brand); color:#fff; }
@@ -9256,21 +9618,256 @@ const CSS = `
   @media print {
     [data-theme] { --bg-base:#fff; --bg-gradient:none; --surface:#fff; --border:#000; --text-hi:#000;
       --text-mid:#000; --panelhead:#000; --nav-bg:#fff; --modal-bg:#fff; --font-display:inherit; }
-    [data-theme] .nav { display:none !important; }
+    [data-theme] .nav, .topbar, .tabbar, .sheet, .sheet-scrim { display:none !important; }
+    [data-theme] .main { padding:0 !important; max-width:none !important; }
     [data-theme] * { backdrop-filter:none !important; -webkit-backdrop-filter:none !important;
       background-image:none !important; box-shadow:none !important; color:#000 !important; }
   }
-  @media (max-width: 820px) {
-    .app { flex-direction:column !important; }
-    .nav { width:auto !important; height:auto !important; position:static !important;
-           flex-direction:row !important; flex-wrap:wrap !important; gap:4px !important; }
-    .nav .navbtn { width:auto !important; }
-    .main { padding:16px !important; max-width:none !important; }
-    /* 16px inputs stop mobile browsers auto-zooming on focus */
-    .input { font-size:16px; }
-    /* inline grids are 2- or 4-column; collapse them all on small screens */
-    [style*="grid-template-columns"] { grid-template-columns:1fr !important; }
-    /* let wide tables scroll horizontally instead of overflowing the panel */
-    .tbl { display:block; overflow-x:auto; white-space:nowrap; }
+
+  /* ══ RESPONSIVE ═══════════════════════════════════════════════════════════════════════════
+     Five bands — phone / tablet / laptop / desktop / wide — every width interpolated from
+     src/lib/breakpoints.js so no number is typed twice. Plus a SEPARATE axis for pointer type,
+     because "narrow" and "touched" are different questions: a 1024px tablet is a wide screen
+     driven by a fingertip, and a 900px laptop window is a narrow one driven by a mouse.
+
+     Two rules this block holds to:
+
+     · The inline grid-template-columns on a layout stays the DESKTOP truth. Everything here
+       only applies at or below the tablet band, so laptops and desktops render exactly what
+       they rendered before — which is also what keeps Basic pixel-identical there.
+
+     · "!important" appears only where a rule must beat an INLINE style (an important author
+       declaration outranks a normal inline one — it is the only way to restyle a layout whose
+       columns are written in a style={{}}). It is never used to win a fight inside this file.
+     ═════════════════════════════════════════════════════════════════════════════════════════ */
+
+  /* ── Responsive grids ────────────────────────────────────────────────────────────────────
+     Opt-in BY CLASS, which is the entire point. The previous version of this block collapsed
+     every element carrying an inline grid-template-columns via [style*="grid-template-columns"]
+     — including the appointments calendar (56px repeat(N, minmax(140px,1fr))), whose time
+     gutter and stylist columns therefore stacked on top of each other on every phone. A layout
+     is responsive here because it says it is.
+
+       .g2       a pair of equal panes                → 1 column on a phone
+       .g3       three across                         → 2 up on a tablet, 1 on a phone
+       .g-split  an unequal pair (1.4fr 1fr, …)       → 1 column from the tablet band down,
+                                                        since the narrow half is a receipt or a
+                                                        form that cannot survive being halved
+       .cards    the 4-across stat row                → auto-fit: 2 up on a phone, 1 at 320px */
+  @media (max-width: ${MAX.tablet}px) {
+    .g3 { grid-template-columns:1fr 1fr !important; }
+    .g-split { grid-template-columns:1fr !important; }
+    .cards { grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)) !important; }
+  }
+  @media (max-width: ${MAX.phone}px) {
+    .g2, .g3 { grid-template-columns:1fr !important; }
+  }
+
+  /* ── Wide screens ────────────────────────────────────────────────────────────────────────
+     The content column caps at CONTENT_MAX (see S.main). ".main.wide" opts a screen out of the
+     cap entirely — used by Appointments, whose calendar is a canvas that genuinely wants the
+     whole monitor rather than a reading-width column. */
+  .main.wide { max-width:none !important; }
+
+  /* ── Tables ──────────────────────────────────────────────────────────────────────────────
+     Below the laptop band a table scrolls sideways INSIDE itself rather than stretching the
+     page — html/body carry overflow-x:hidden, so a table is never able to drag the whole
+     screen sideways. The first column pins so the row stays identifiable while the rest
+     scrolls under it; that sliding-under is also the affordance that says "there is more".
+     The pin needs an OPAQUE backdrop, which is why --tbl-sticky-bg exists: --surface is a
+     translucent glass fill under the Advanced theme and would let the text scroll through. */
+  @media (max-width: ${MAX.tablet}px) {
+    .tbl { display:block; overflow-x:auto; white-space:nowrap; -webkit-overflow-scrolling:touch; }
+    .tbl th:first-child, .tbl td:first-child {
+      position:sticky; left:0; z-index:1; background:var(--tbl-sticky-bg, #fff);
+    }
+    .tbl tr:hover td:first-child { background:var(--tbl-sticky-bg, #fff); }
+  }
+
+  /* ── Shell: tablet (${BREAKPOINTS.tablet}–${MAX.tablet}px) ───────────────────────────────
+     A ${RAIL_WIDTH}px rail is a third of a 768px portrait tablet. It collapses to icons, and the
+     ☰ at its head expands it back over the content (position:fixed, not re-flowed) so the page
+     underneath never jumps while you navigate. Every nav button keeps its title/aria-label, so
+     the label is still reachable by long-press and by a screen reader while collapsed. */
+  .railtoggle { display:none; }
+  /* The rail's footer blocks (Backup / Restore, Reset / Logout). Their display lives here, not
+     inline, so the collapsed tablet rail can hide them — see the tablet band below. */
+  .navrow { display:flex; gap:6px; }
+  .rail-scrim { position:fixed; inset:0; z-index:125; background:var(--overlay-bg, rgba(15,30,20,.45)); }
+  @media (min-width: ${BREAKPOINTS.tablet}px) and (max-width: ${MAX.tablet}px) {
+    /* width/padding/position/display below are all !important for one reason: S.nav and S.main
+       set them INLINE, and a normal stylesheet declaration loses to an inline one. */
+    .nav { width:${RAIL_WIDTH_ICONS}px !important; padding:12px 8px !important; }
+    .nav .navbtn { justify-content:center; padding:11px 0; gap:0; }
+    .nav .navbtn.sub { padding-left:0; }
+    .nav .navbtn.sub::before { display:none; }
+    .nav .navlabel, .nav .navfoot, .nav .navshop, .nav .navgrouplabel, .nav .navchev { display:none; }
+    /* margin is !important because S.badge sets marginLeft inline for the full rail. */
+    .nav .navbtn .badge-n { position:absolute; top:2px; right:2px; margin:0 !important; }
+    .nav .railtoggle { display:flex; justify-content:center; font-size:16px; }
+    /* "Restore (JSON / XLSX)" cannot be squeezed into a 64px column — abbreviated it reads as
+       nothing, and left alone it spills out of the rail. The footer blocks are hidden while the
+       rail is collapsed and come back when it is expanded, which is one tap on the ☰ above. */
+    .nav .navutil { display:none; }
+    /* Expanded: floats over the page rather than re-flowing it, so the content column doesn't
+       jump sideways every time the menu is opened. */
+    .nav[data-open="1"] { position:fixed !important; z-index:130; width:${RAIL_WIDTH}px !important;
+      box-shadow:12px 0 40px rgba(0,0,0,.35); }
+    .nav[data-open="1"] .navbtn { justify-content:flex-start; padding:10px 12px; gap:6px; }
+    .nav[data-open="1"] .navbtn.sub { padding-left:26px; }
+    .nav[data-open="1"] .navbtn.sub::before { display:block; }
+    .nav[data-open="1"] .navlabel, .nav[data-open="1"] .navfoot,
+    .nav[data-open="1"] .navshop, .nav[data-open="1"] .navgrouplabel,
+    .nav[data-open="1"] .navchev { display:revert; }
+    .nav[data-open="1"] .navbtn .badge-n { position:static; }
+    .nav[data-open="1"] .navutil { display:block; }
+    .nav[data-open="1"] .navrow { display:flex; }
+    .main { padding:18px 16px !important; }
+  }
+
+  /* ── Shell: phone (≤${MAX.phone}px) ──────────────────────────────────────────────────────
+     The sidebar goes away entirely. 22 tabs wrapped into a block cost ~300px above every
+     screen — 40% of an iPhone SE. Navigation moves to a bottom bar within thumb reach, with
+     the rest of the tabs (and Backup / Reset / Logout) in a sheet behind "More".
+     Both bars pay back the viewport-fit=cover in index.html with safe-area padding, so nothing
+     lands under the notch or the home indicator. */
+  @media (max-width: ${MAX.phone}px) {
+    /* display/padding/max-width are !important because S.nav and S.main declare them INLINE.
+       Without it the 210px rail simply stays put, shoves the content column off the right of a
+       390px screen, and the bottom bar it was replaced by lands on top of it. */
+    .nav { display:none !important; }
+    .app { flex-direction:column; }
+    .main { padding:14px 12px !important; max-width:none !important;
+      /* clear the fixed tab bar, plus the home indicator below it */
+      padding-bottom:calc(${TABBAR_H}px + env(safe-area-inset-bottom) + 16px) !important; }
+  }
+  .topbar { display:none; }
+  .tabbar { display:none; }
+  @media (max-width: ${MAX.phone}px) {
+    /* --bar-bg, not --nav-bg: these two lie over scrolling content and cannot blur, so their
+       ground has to be fully opaque or the page reads straight through them. */
+    .topbar { position:sticky; top:0; z-index:80; display:flex; align-items:center; gap:10px;
+      padding:calc(env(safe-area-inset-top) + 9px) 14px 9px;
+      background:var(--bar-bg, var(--ink)); color:var(--nav-hi);
+      border-bottom:1px solid var(--nav-line); }
+    .tabbar { position:fixed; left:0; right:0; bottom:0; z-index:100; display:flex;
+      background:var(--bar-bg, var(--ink)); border-top:1px solid var(--nav-line);
+      padding-bottom:env(safe-area-inset-bottom); }
+  }
+  .tabbtn { flex:1 1 0; min-width:0; display:flex; flex-direction:column; align-items:center;
+    justify-content:center; gap:3px; min-height:${TABBAR_H}px; padding:7px 2px; position:relative;
+    background:none; border:none; color:var(--nav-text); font-family:inherit; font-size:10px;
+    font-weight:700; letter-spacing:-.01em; cursor:pointer; }
+  .tabbtn .tabico { font-size:18px; line-height:1; }
+  .tabbtn .tablabel { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tabbtn.active { color:#fff; }
+  .tabbtn.active::before { content:""; position:absolute; top:0; left:50%; transform:translateX(-50%);
+    width:26px; height:3px; border-radius:0 0 3px 3px; background:var(--brand); }
+  /* Unread/low-stock count on a bottom-bar item, and the aggregate dot on "More" when the
+     badged tab is hidden inside the sheet. */
+  .tabbtn .tabbadge { position:absolute; top:4px; left:50%; margin-left:4px; background:#C44536;
+    color:#fff; font-size:9.5px; font-weight:800; border-radius:9px; padding:0 5px; line-height:15px;
+    min-width:15px; text-align:center; }
+
+  /* The "More" sheet. A bottom sheet rather than a centred dialog: it opens from the bar that
+     summoned it and stays inside thumb reach. dvh, not vh — vh on iOS is the tallest the
+     viewport ever gets, so a vh-sized sheet hides its own last row behind the browser chrome. */
+  .sheet-scrim { position:fixed; inset:0; z-index:110; background:var(--overlay-bg, rgba(15,30,20,.45)); }
+  .sheet { position:fixed; left:0; right:0; bottom:0; z-index:120; max-height:82dvh; overflow:auto;
+    -webkit-overflow-scrolling:touch; background:var(--sheet-bg, #fff);
+    border-radius:18px 18px 0 0; border-top:1px solid var(--border, #E2EAE3);
+    padding:8px 12px calc(14px + env(safe-area-inset-bottom));
+    box-shadow:0 -14px 44px rgba(0,0,0,.3); }
+  .sheet-grip { width:38px; height:4px; border-radius:4px; background:var(--border, #D5E0D6);
+    margin:6px auto 10px; }
+  /* Inside the sheet the rail's own buttons are reused, so they need the rail's ink back —
+     the sheet sits on a light panel, not on the dark nav. */
+  .sheet .navbtn { color:var(--text-hi, #1E2421); }
+  .sheet .navbtn:hover { background:var(--brand-soft); color:var(--brand-soft-text); }
+  .sheet .navbtn.active { background:var(--brand); color:#fff; }
+  .sheet .navbtn.util { background:var(--btn-bg, var(--brand-soft)); color:var(--btn-fg, var(--brand-soft-text));
+    border:1px solid var(--border, #D5E0D6); }
+
+  /* ── Page headers ────────────────────────────────────────────────────────────────────────
+     Once the actions wrap onto their own line, "pushed right by margin-left:auto" is the wrong
+     shape — they read as a stray cluster. They go full-width instead, which also makes each
+     control a comfortable target. */
+  @media (max-width: ${MAX.phone}px) {
+    .pagehead { margin-bottom:14px !important; gap:10px !important; }
+    .pagehead h1 { font-size:20px !important; }
+    .pagehead .pagehead-actions { margin-left:0 !important; width:100%; }
+    .pagehead .pagehead-actions > * { width:100%; }
+    .pagehead .pagehead-actions .btn { flex:1 1 auto; }
+  }
+
+  /* ── Dialogs become bottom sheets on a phone ─────────────────────────────────────────────
+     A centred 92vw box is a poor shape on a 390×844 screen: its actions land mid-screen, and
+     the on-screen keyboard pushes it half out of view. Anchored to the bottom edge it opens
+     where the thumb already is, and the keyboard shortens it from the top instead. */
+  @media (max-width: ${MAX.phone}px) {
+    .overlay { place-items:end center !important; }
+    .modal { width:100% !important; border-radius:18px 18px 0 0; max-height:88dvh;
+      padding:16px 14px calc(16px + env(safe-area-inset-bottom)); }
+  }
+
+  /* ── POS running total (phone) ───────────────────────────────────────────────────────────
+     Sits directly on top of the tab bar and shares its safe-area padding, so the two read as
+     one piece of furniture rather than as a banner floating over the page. */
+  .cartbar { position:fixed; left:8px; right:8px; z-index:95;
+    bottom:calc(${TABBAR_H}px + env(safe-area-inset-bottom) + 8px);
+    display:flex; align-items:center; gap:10px; padding:11px 14px;
+    min-height:${TOUCH_TARGET}px; border:none; border-radius:12px; cursor:pointer;
+    background:var(--brand); color:#fff; font-family:inherit; font-size:13.5px; font-weight:700;
+    box-shadow:0 8px 24px rgba(0,0,0,.28); }
+  .cartbar-n { background:rgba(255,255,255,.22); border-radius:8px; padding:2px 8px; font-weight:800; }
+
+  /* ── Fixed furniture clears the tab bar ──────────────────────────────────────────────────
+     The connection pill and the toast are position:fixed at the bottom of the window, which on
+     a phone is exactly where the tab bar now is. */
+  @media (max-width: ${MAX.phone}px) {
+    .connbadge { bottom:calc(${TABBAR_H}px + env(safe-area-inset-bottom) + 10px) !important;
+      right:10px !important; }
+    .toast { bottom:calc(${TABBAR_H}px + env(safe-area-inset-bottom) + 12px) !important;
+      width:max-content; max-width:calc(100vw - 24px); }
+  }
+
+  /* ── Touch ───────────────────────────────────────────────────────────────────────────────
+     Keyed on POINTER, not on width, so a 1024px tablet gets touch sizing and a narrow laptop
+     window does not — and so a mouse-driven desktop keeps its original density untouched.
+     ${TOUCH_TARGET}px is the iOS HIG floor; with the gaps already between these controls it
+     also clears Android's 48dp. */
+  @media (pointer: coarse) {
+    .btn.small { min-height:${TOUCH_TARGET}px; padding:8px 14px; font-size:13px; }
+    .qty { width:${TOUCH_TARGET}px; height:${TOUCH_TARGET}px; font-size:18px; }
+    .navbtn, .pick { min-height:${TOUCH_TARGET}px; }
+    .tabbtn { min-height:max(${TABBAR_H}px, ${TOUCH_TARGET}px); }
+    /* 16px is the threshold below which iOS Safari zooms the page on focus. It is set for every
+       coarse pointer, not just for narrow ones — an iPad at 1024px zoomed on every field under
+       the old width-only rule. */
+    .input, select.input, textarea.input { font-size:16px; min-height:${TOUCH_TARGET}px; }
+    /* Kill the 300ms double-tap-to-zoom delay on controls, and the grey flash Android paints
+       over a tapped button. Pinch-zoom on the page itself is untouched. */
+    .btn, .navbtn, .tabbtn, .pick, .qty, button, [role="button"] {
+      touch-action:manipulation; -webkit-tap-highlight-color:transparent;
+    }
+  }
+  /* Hover styling only where a pointer can actually hover. On a touchscreen these otherwise
+     latch on after a tap and stay lit until something else is tapped. */
+  @media (hover: none) {
+    .btn:hover, .navbtn:hover, .pick:hover:not(:disabled), .tbl tr:hover td { filter:none; }
+    .navbtn:hover { background:none; color:var(--nav-text); }
+    .navbtn.active:hover { background:var(--brand); color:#fff; }
+    .pick:hover:not(:disabled) { border-color:var(--pick-border, #DDE8DE); background:var(--pick-bg, #F6FAF6); }
+    .tbl tr:hover td { background:transparent; }
+  }
+
+  /* ── Landscape phone ─────────────────────────────────────────────────────────────────────
+     The POS is used at the counter with the phone turned sideways. There is very little height
+     there, so the sticky chrome gives some of it back. */
+  @media (max-width: ${MAX.tablet}px) and (orientation: landscape) and (max-height: 480px) {
+    .topbar { position:static; }
+    .tabbtn { min-height:46px; font-size:9.5px; }
+    .tabbtn .tabico { font-size:15px; }
+    .sheet { max-height:92dvh; }
   }
 `;

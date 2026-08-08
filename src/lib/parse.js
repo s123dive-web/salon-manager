@@ -5,7 +5,12 @@
 // The goal is to accept messy, real-world data: with or without headers, any
 // common delimiter, currency symbols, nested JSON backups, etc.
 // Everything runs in the browser. PDF text extraction is best-effort.
-import * as XLSX from "xlsx";
+//
+// `xlsx` and `pdfjs` are both loaded ON DEMAND, inside the branch that needs them (see
+// parseFile / pdfToText) rather than at the top of this module. Between them they are over
+// 300 kB gzipped, and this module is reached from the app's main bundle — importing them here
+// would mean every sign-in on a counter phone downloads a spreadsheet engine and a PDF engine
+// to render a login form. Neither is needed until somebody actually uploads that kind of file.
 
 // Loose unit aliases → canonical unit. Lets columnar data say "pcs", "grams", etc.
 const UNIT_ALIASES = {
@@ -324,6 +329,7 @@ export async function parseFile(file) {
     return jsonToRows(JSON.parse(await file.text()));
   }
   if (ext === "xlsx" || ext === "xls") {
+    const XLSX = await import("xlsx");
     const wb = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
     const sheet = wb.Sheets[wb.SheetNames[0]];
     const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, blankrows: false, raw: true });

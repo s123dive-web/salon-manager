@@ -199,6 +199,71 @@ window if it's printed directly. The Advanced display face (`--font-display`) is
 stack** (`Cormorant Garamond → Georgia → serif`), never a web font — the app must run on a counter
 tablet with the Wi-Fi off, so nothing is fetched.
 
+## Responsive layout
+
+Five bands, all defined once in [`src/lib/breakpoints.js`](src/lib/breakpoints.js) and interpolated
+into the CSS block — **no width is typed twice**. `deviceClass()` is pure and pinned by
+[`breakpoints.test.js`](src/lib/breakpoints.test.js) against the widths the salon actually holds.
+
+| Band | Width | Shell |
+|---|---|---|
+| phone | ≤ 599 | sidebar hidden; bottom tab bar (4 tabs + More sheet) |
+| tablet | 600–1023 | sidebar collapsed to a 64px icon rail, `☰` expands it *over* the page |
+| laptop | 1024–1439 | the original layout, untouched |
+| desktop / wide | ≥ 1440 | same, content to `CONTENT_MAX` (1600, was 1280) |
+
+Pointer type is a **separate axis** from width: touch sizing hangs off `(pointer: coarse)`, hover
+styling off `(hover: hover)`. A 1024px tablet is a wide screen driven by a fingertip; a 900px laptop
+window is a narrow one driven by a mouse. Keying touch sizing on width is what used to make an iPad
+zoom on every input.
+
+### Four things that will bite
+
+1. **A media query loses to an inline style.** Most layout in `salon-manager.jsx` is inline
+   (`S.nav`, `S.main`, `S.app`, the ~54 inline grids), and a normal stylesheet declaration cannot
+   beat one. Every responsive rule that restyles an inline-styled element therefore carries
+   `!important` — that is the *only* thing it is used for here, never to win a fight inside the CSS
+   block. Miss it and the change silently does nothing: the 210px rail just stays put on a phone.
+
+2. **Responsive grids are opt-in by class.** `.g2` / `.g3` / `.g-split` / `.cards`. The previous
+   version of this block collapsed *every* element with an inline `grid-template-columns` via
+   `[style*="grid-template-columns"]`, which also matched the appointments calendar
+   (`56px repeat(N, minmax(140px,1fr))`) and stacked its time gutter on top of its stylist columns
+   on every phone. The calendar, the barcode keypad and the `auto-fill` grids deliberately carry no
+   class. Adding a new two-pane layout = add the class; don't widen a selector.
+
+3. **Anything pinned over scrolling content must be OPAQUE.** The blur budget above allows
+   `backdrop-filter` on the sidebar and the modal scrim only — so the tab bar, top bar and More
+   sheet can't have it, and Advanced's `--nav-bg` (72%) / `--modal-bg` (88%) let the page read
+   straight through them. They use `--bar-bg` / `--sheet-bg` instead, which are solid; the pinned
+   first column of a scrolling table uses `--tbl-sticky-bg` for the same reason.
+
+4. **`background:` is banned where `backgroundImage` is also set.** Use `backgroundColor`. A
+   shorthand whose value contains `var()` is stored as one *pending-substitution* value covering
+   every longhand it owns, so setting `backgroundImage` immediately after (React writes style keys
+   in order) discards the rest and **background-color comes out empty**. This is real Chrome CSSOM
+   behaviour, not a jsdom quirk. It is why Advanced's dark ground never painted — its light text sat
+   on the white page — and it is pinned by `responsive.integration.test.jsx`.
+
+`100vh` → always paired with a `100dvh` line after it (`.app`, `.nav`, `.modal`). On iOS `vh` is the
+viewport at its *tallest*, so a 100vh rail is taller than the screen whenever Safari's toolbar is
+expanded. `index.html` opts into `viewport-fit=cover`, so everything pinned to an edge pays it back
+with `env(safe-area-inset-*)` padding.
+
+### Verifying it
+
+`responsive.integration.test.jsx` mounts the **real** app with `window.matchMedia` stubbed per
+width, asserts which shell each band gets, and pins the CSS contract. jsdom lays nothing out, so it
+proves the rules are present and say what they were written to say — never that a layout *looks*
+right. That part is a browser.
+
+**Headless Chrome will lie to you about phones.** It clamps its window to ~500 CSS px, so
+`--window-size=390` renders at 500 and merely *crops* the screenshot — which reads as "the content
+overflows" when it does not. Load the page in an `<iframe width="390">` instead: a frame gets
+exactly the viewport it is given and its media queries evaluate against it. Check
+`document.documentElement.scrollWidth === clientWidth` inside the frame; that inequality is the
+horizontal-overflow bug that actually ruins a phone.
+
 ## Conventions
 
 - `src/lib/*.js` is pure logic — no React, no Firebase (except the thin `firebase.js` /
