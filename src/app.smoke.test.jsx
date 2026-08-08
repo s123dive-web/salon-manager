@@ -40,12 +40,15 @@ vi.mock("firebase/storage", () => ({
 vi.mock("firebase/app", () => ({ initializeApp: vi.fn(() => ({})), deleteApp: vi.fn() }));
 
 describe("salon-manager module", () => {
+  // 20s, not the 5s default: this is the FIRST transform of a ~10k-line JSX module, and it
+  // races the four full-app jsdom suites for the same cores. Timing out here reads as "the
+  // app fails to load" when all that happened was a busy machine.
   it("evaluates without throwing, and exports the App component", async () => {
     // A module-init error (bad ordering, a throwing seed builder) surfaces here as a rejected
     // import rather than as a white screen in front of a customer.
     const mod = await import("./salon-manager.jsx");
     expect(typeof mod.default).toBe("function");
-  });
+  }, 20000);
 
   it("builds its seed catalogues at module load", async () => {
     // The seeds are top-level consts: if buildProducts/buildServices threw, or read `uid`

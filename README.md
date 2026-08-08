@@ -84,37 +84,75 @@ Other scripts: `npm run build`, `npm run preview`, `npm run lint`, `npm run form
 Salon Manager is **multi-user**. The owner manages staff accounts from inside the app
 (**Settings → Users**) — no Firebase console visits for day-to-day user management.
 
+This table is the **default** for each role. Most of it is then the owner's to change from
+**Settings → Users & roles → Feature access** — see [Feature access](#feature-access) below.
+A ⚙ marks a row the owner can switch either way.
+
 | Can they… | Owner | Biller | Inventory |
 |---|:--:|:--:|:--:|
-| Billing (POS), print receipts | ✅ | ✅ | ✅ |
-| Appointments — view, book, change status, block time | ✅ | ✅ | ✅ |
-| Customer picker (search + quick-create) | ✅ | ✅ | ✅ |
+| Billing (POS), print receipts | ✅ | ✅ ⚙ | ✅ ⚙ |
+| Appointments — view, book, change status, block time | ✅ | ✅ ⚙ | ✅ ⚙ |
+| Customer picker (search + quick-create) | ✅ | ✅ ⚙ | ✅ ⚙ |
 | Dashboard — the shop's revenue, profit and margins | ✅ | — | — |
 | Dashboard — today's diary + their own bills | ✅ | ✅ | ✅ |
-| Browse the customer database, profiles, segments | ✅ | — | — |
-| View a past bill (to reprint) | ✅ | ✅ | ✅ |
-| Edit or delete a bill | ✅ | — | — |
-| Back-date a bill | ✅ | — | — |
-| Inventory — add / edit / restock | ✅ | — | ✅ |
-| Alerts, Barcode Creator, Data Import | ✅ | — | ✅ |
+| Browse the customer database, profiles, segments | ✅ | — ⚙ | — ⚙ |
+| View a past bill (to reprint) | ✅ | ✅ ⚙ | ✅ ⚙ |
+| Edit a bill | ✅ | — ⚙ | — ⚙ |
+| Delete a bill | ✅ | — | — |
+| Back-date a bill | ✅ | — ⚙ | — ⚙ |
+| Inventory — see stock | ✅ | — ⚙ | ✅ ⚙ |
+| Inventory — add / edit / restock | ✅ | — | ✅ ⚙ |
+| Alerts | ✅ | — ⚙ | ✅ ⚙ |
+| Barcode Creator, Data Import | ✅ | — | ✅ ⚙ |
 | Finance, Stats | ✅ | — | — |
-| Expenses, Vendor Bills, Udhari ledger | ✅ | — | — |
-| Services, Staff, Packages, Loyalty config | ✅ | — | — |
+| Expenses, Vendor Bills | ✅ | — | — |
+| Udhari ledger | ✅ | — ⚙ | — ⚙ |
 | Redeem a customer's points / package at the till | ✅ | ✅ | ✅ |
+| Services, Staff, Packages, Loyalty config | ✅ | — | — |
 | Staff commissions & payout reports | ✅ | — | — |
-| Reminders / campaigns | ✅ | — | — |
-| Settings, Users, Activity Log | ✅ | — | — |
+| Reminders — send | ✅ | — ⚙ | — ⚙ |
+| Reminders — edit the message templates | ✅ | — | — |
+| Activity Log | ✅ | — ⚙ | — ⚙ |
+| Settings, Users | ✅ | — | — |
 | Backup / Restore | ✅ | — | — |
 
-`inventory` is a strict superset of `biller` — a test enforces that, so the two can't drift.
+By default `inventory` is a strict superset of `biller` — a test enforces that, so the two
+can't drift. Once an owner starts switching features per role they are simply two independent
+sets, which is the point.
+
+### Feature access
+
+**Settings → Users & roles → Feature access** is a matrix of every switchable feature against
+the two worker roles. Tick or untick, press Save, and it applies to everyone with that role on
+every device — a counter tablet picks it up live, with no reload.
+
+The choices are stored at `config.permissions` as a **sparse map of what changed from the
+default**, so a shop that leaves a feature alone keeps following the default if a later version
+improves it. Nothing is written per user: the switches are per role.
+
+**What the panel refuses to offer is the interesting part.** `database.rules.json` hard-codes
+`role === 'owner'` on the sensitive nodes, so a toggle for (say) Expenses would open a screen
+whose every read comes back permission-denied — a switch that looks like it worked and then
+fails at the counter. `GRANTABLE` in [`roles.js`](src/lib/roles.js) is therefore the envelope,
+derived from the rules, and `can()` **intersects with it** — so even a `permissions` blob
+hand-edited into the Firebase console cannot grant what the rules would refuse. The features
+that can never be delegated are listed in the panel *with the reason*, rather than being
+quietly absent. An owner is never restricted by any of this, which is what stops a setting from
+costing the last owner their own shop.
+
+Adding a feature to the panel means checking the matching rule in `database.rules.json` first,
+then adding the action to `GRANTABLE`. `src/permissions.integration.test.jsx` mounts the real
+app per role and pins all of the above.
 
 **Enforced in two layers**, and both matter:
 
 1. **UI** — [`src/lib/roles.js`](src/lib/roles.js) is the single source of truth for
-   `can(role, action)`. Navigation renders by role, and **every gated view re-checks its own
-   permission**: hiding a button is not a control, because the active tab is just state.
-   Role is resolved from `shop/users/<uid>` *before* the app shell renders, so a worker never
-   sees an owner-only view flash past on a slow connection.
+   `can(role, action, permissions)`. Navigation renders by role, and **every gated view
+   re-checks its own permission**: hiding a button is not a control, because the active tab is
+   just state. Role is resolved from `shop/users/<uid>` *before* the app shell renders, so a
+   worker never sees an owner-only view flash past on a slow connection. The owner's per-role
+   feature switches are the third argument — they can only move a permission *inside* what
+   layer 2 already allows.
 2. **Server** — [`database.rules.json`](database.rules.json) re-derives the role from
    `shop/users/<uid>` and enforces it at the database. This is the real boundary.
 
@@ -172,6 +210,10 @@ True isolation would need a backend API in front of the database (Cloud Function
 server), which is out of scope. The role system is an **operational control** over what staff
 can do and see in normal use, **plus rule-enforced protection of the genuinely sensitive
 slices** — money, settings, user management, and deletions.
+
+The Feature access switches sit squarely in the first category and inherit its limits exactly:
+they change what the app offers, never what the database permits. That is also why they cannot
+*grant* anything past the rules — the envelope is the same boundary described above.
 
 ## How data is stored
 
@@ -233,7 +275,7 @@ tested data (no clock, no randomness).
 | Module | What it does | Tests |
 |---|---|---|
 | [`sync.js`](src/lib/sync.js) | keyed-node storage, field-level deltas, 3-way merge, role-aware slice reads | ✅ |
-| [`roles.js`](src/lib/roles.js) | the `can(role, action)` permission matrix | ✅ |
+| [`roles.js`](src/lib/roles.js) | the `can(role, action, permissions)` matrix, plus the envelope the owner may switch features inside | ✅ |
 | [`seed.js`](src/lib/seed.js) | first-run service menu, stock, staff, templates | ✅ |
 | [`customers.js`](src/lib/customers.js) | phone normalisation (the customer key) + drift-free visit/spend stats | ✅ |
 | [`salon.js`](src/lib/salon.js) | service/staff validation, commission rate resolution, bill-line types | ✅ |

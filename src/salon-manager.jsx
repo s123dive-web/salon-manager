@@ -25,7 +25,11 @@ import { itemBarcodes, findItemByBarcode, findBarcodeClash, parseBarcodeText, wi
 import { renderReceiptFile, canShareImages } from "./lib/receiptImage.js";
 import { receiptWaLink, receiptMessage } from "./lib/receipts.js";
 import { uploadReceiptImage, uploadErrorMessage } from "./lib/receiptStorage.js";
-import { can, ROLE_LABELS, ROLE_DESCRIPTIONS, ROLES, resolveRole, isBootstrap, validateUserChange } from "./lib/roles.js";
+import {
+  can, ROLE_LABELS, ROLE_DESCRIPTIONS, ROLES, resolveRole, isBootstrap, validateUserChange,
+  GRANTABLE, CONFIGURABLE_ROLES, LOCKED_FEATURES, ACTION_LABELS, FEATURE_GROUPS,
+  roleDefaults, sanitizePermissions,
+} from "./lib/roles.js";
 import {
   PRODUCT_CATEGORIES, PRODUCT_CATEGORY_ICONS, SERVICE_CATEGORIES, serviceIconFor,
   buildProducts, buildServices, buildStaff, buildTemplates,
@@ -1049,7 +1053,8 @@ const OTHER_TABS = [
 const PHONE_BAR_TABS = ["dashboard", "billing", "appointments", "customers"];
 
 // A tab is reachable when its feature flag is on AND the signed-in role holds its permission.
-const tabAllowed = (role, [k, , , action]) => tabEnabled(k) && (!action || can(role, action));
+// `perms` is config.permissions — the owner's per-role feature switches (see roles.js).
+const tabAllowed = (role, perms, [k, , , action]) => tabEnabled(k) && (!action || can(role, action, perms));
 
 // Slices that get seeded on first run, and the permission required to write that seed. A role
 // without the permission simply doesn't seed — it waits for an owner to sign in and do it —
@@ -1058,7 +1063,10 @@ const SEEDERS = {
   items: { build: () => SEED_ITEMS, action: "inventory.edit" },
   services: { build: () => SEED_SERVICES, action: "services.manage" },
   staff: { build: () => SEED_STAFF, action: "staff.manage" },
-  messageTemplates: { build: () => SEED_TEMPLATES, action: "reminders.use" },
+  // reminders.templates, not reminders.use: shop/messageTemplates is owner-write-only, and
+  // an owner may now hand Reminders to a worker. Seeding on `reminders.use` would fire a
+  // write the rules bounce the moment they did.
+  messageTemplates: { build: () => SEED_TEMPLATES, action: "reminders.templates" },
 };
 
 function StoreManager({ user, role, onLogout }) {
@@ -1089,6 +1097,23 @@ function StoreManager({ user, role, onLogout }) {
   const [config, setConfig] = useState(() => readCachedConfig());
   const [loaded, setLoaded] = useState(false);
   const [toast, setToast] = useState(null);
+
+  // ---- what this person may actually do ----
+  // The role's built-in matrix, plus the owner's per-role feature switches from the shared
+  // config — so switching Billing off for the Billers reaches their tablet the moment it
+  // saves, with no reload. Declared up here because the seeding effect below needs it.
+  //
+  // `allow` is the ONLY permission check this component makes: a stray can(role, …) would
+  // apply the switches in some places and not others, which is exactly how a hidden tab ends
+  // up with a reachable view behind it. Sub-components that check for themselves are handed
+  // `perms` alongside `role`.
+  const perms = useMemo(() => sanitizePermissions(config.permissions), [config.permissions]);
+  const allow = useCallback((action) => can(role, action, perms), [role, perms]);
+  // The seeding branch inside the sync subscription needs this too, but re-subscribing every
+  // slice each time the owner saves a switch would be pointless churn — a ref keeps the check
+  // current without putting `allow` in that effect's dependency list.
+  const allowRef = useRef(allow);
+  allowRef.current = allow;
 
   // ---- Realtime Database sync (live across every signed-in device) ----
   // Every record (item/sale/expense/log) lives at its own keyed node — shop/<slice>/<id> —
@@ -1189,7 +1214,7 @@ function StoreManager({ user, role, onLogout }) {
           // would be rejected and would leave the local list out of step with the cloud.
           const seeder = SEEDERS[slice];
           if (seeder && val === null) {
-            if (seeded.current[slice] || !can(role, seeder.action)) {
+            if (seeded.current[slice] || !allowRef.current(seeder.action)) {
               synced.current[slice] = true;
               return;
             }
@@ -1485,16 +1510,17 @@ function StoreManager({ user, role, onLogout }) {
   // The rails this role actually sees. Hiding a tab is a convenience, not the control — the
   // render switch below re-checks every gated view with can(), because `tab` is just state and
   // could be set to anything.
-  const myTopTabs = useMemo(() => TOP_TABS.filter((t) => tabAllowed(role, t)), [role]);
-  const myOtherTabs = useMemo(() => OTHER_TABS.filter((t) => tabAllowed(role, t)), [role]);
+  const myTopTabs = useMemo(() => TOP_TABS.filter((t) => tabAllowed(role, perms, t)), [role, perms]);
+  const myOtherTabs = useMemo(() => OTHER_TABS.filter((t) => tabAllowed(role, perms, t)), [role, perms]);
 
-  // If the active tab isn't allowed (a live demotion, or a stale tab from a previous session),
-  // fall back to the dashboard rather than rendering a blank main pane.
+  // If the active tab isn't allowed (a live demotion, an owner switching a feature off under
+  // them, or a stale tab from a previous session), fall back to the dashboard rather than
+  // rendering a blank main pane.
   useEffect(() => {
     const all = [...TOP_TABS, ...OTHER_TABS];
     const current = all.find(([k]) => k === tab);
-    if (current && !tabAllowed(role, current)) setTab("dashboard");
-  }, [role, tab]);
+    if (current && !tabAllowed(role, perms, current)) setTab("dashboard");
+  }, [role, perms, tab]);
 
   // Show the "Other" sub-list when the user toggled it open, or whenever an active tab
   // lives inside it (so the current page is never hidden behind a collapsed group).
@@ -1563,11 +1589,11 @@ function StoreManager({ user, role, onLogout }) {
   // `guard` is the second enforcement layer. The nav already hides what a role can't reach, but
   // `tab` is ordinary state: hiding a button is not a control. Each branch names the SAME action
   // its nav entry declares, so a tab and its view can never drift out of step.
-  const guard = (action, node) => (can(role, action) ? node : <NoAccess role={role} />);
+  const guard = (action, node) => (allow(action) ? node : <NoAccess role={role} />);
   // The owner's dashboard is the shop's books — revenue, profit, margins, stock value. A worker
   // gets a different screen entirely (their diary + their own bills), rather than the same one
   // with pieces blanked out: an emptied-out books page reads as broken, not as "not for you".
-  const dashboard = can(role, "stats.view") ? (
+  const dashboard = allow("stats.view") ? (
     <Dashboard
       items={items} sales={sales} lowStock={lowStock} goBilling={() => setTab("billing")}
       appointments={appointments} customers={customers} staff={staff} services={services}
@@ -1585,10 +1611,10 @@ function StoreManager({ user, role, onLogout }) {
   // gets guardOnline directly so it can refuse a sale up-front, before printing or clearing the cart.
   const VIEWS = {
     dashboard: () => dashboard,
-    appointments: () => guard("appointments.view", <Appointments appointments={appointments} setAppointments={writers.appointments} customers={customers} setCustomers={writers.customers} services={services} staff={staff} config={config} notify={notify} log={addLog} role={role} onCompleteToBill={completeToBill} />),
-    billing: () => guard("billing.use", <Billing items={items} sales={sales} services={services} staff={staff} customers={customers} customerPackages={customerPackages} config={config} setItems={writers.items} setSales={writers.sales} setCustomers={writers.customers} store={store} notify={notify} log={addLog} role={role} user={user} guardOnline={guardOnline} prefill={billPrefill} onPrefillUsed={() => setBillPrefill(null)} onBilled={linkBillToAppointment} />),
+    appointments: () => guard("appointments.view", <Appointments appointments={appointments} setAppointments={writers.appointments} customers={customers} setCustomers={writers.customers} services={services} staff={staff} config={config} notify={notify} log={addLog} role={role} perms={perms} onCompleteToBill={completeToBill} />),
+    billing: () => guard("billing.use", <Billing items={items} sales={sales} services={services} staff={staff} customers={customers} customerPackages={customerPackages} config={config} setItems={writers.items} setSales={writers.sales} setCustomers={writers.customers} store={store} notify={notify} log={addLog} role={role} perms={perms} user={user} guardOnline={guardOnline} prefill={billPrefill} onPrefillUsed={() => setBillPrefill(null)} onBilled={linkBillToAppointment} />),
     customers: () => guard("customers.browse", <Customers customers={customers} sales={sales} services={services} staff={staff} customerPackages={customerPackages} config={config} store={store} setCustomers={writers.customers} notify={notify} log={addLog} />),
-    reminders: () => guard("reminders.use", <Reminders customers={customers} setCustomers={writers.customers} sales={sales} services={services} customerPackages={customerPackages} messageTemplates={messageTemplates} setMessageTemplates={writers.messageTemplates} store={store} notify={notify} log={addLog} />),
+    reminders: () => guard("reminders.use", <Reminders customers={customers} setCustomers={writers.customers} sales={sales} services={services} customerPackages={customerPackages} messageTemplates={messageTemplates} setMessageTemplates={writers.messageTemplates} store={store} notify={notify} log={addLog} role={role} perms={perms} />),
     services: () => guard("services.manage", <Services services={services} setServices={writers.services} items={items} notify={notify} log={addLog} />),
     packages: () => guard("packages.manage", <Packages packages={packages} setPackages={writers.packages} customerPackages={customerPackages} setCustomerPackages={writers.customerPackages} services={services} customers={customers} setCustomers={writers.customers} setSales={writers.sales} notify={notify} log={addLog} />),
     staff: () => guard("staff.manage", <Staff staff={staff} setStaff={writers.staff} sales={sales} appointments={appointments} store={store} notify={notify} log={addLog} />),
@@ -1596,7 +1622,7 @@ function StoreManager({ user, role, onLogout }) {
     inventory: () => guard("inventory.view", <Inventory items={items} setItems={writers.items} notify={notify} log={addLog} cats={cats} onAddCategory={addCategory} role={role} />),
     alerts: () => guard("alerts.view", <Alerts items={items} goInventory={() => setTab("inventory")} cats={cats} />),
     barcode: () => guard("barcode.use", <BarcodeCreator items={items} setItems={writers.items} store={store} notify={notify} log={addLog} />),
-    sales: () => guard("sales.view", <SalesHistory sales={sales} items={items} staff={staff} services={services} customerPackages={customerPackages} setSales={writers.sales} setItems={writers.items} store={store} notify={notify} log={addLog} role={role} guardOnline={guardOnline} />),
+    sales: () => guard("sales.view", <SalesHistory sales={sales} items={items} staff={staff} services={services} customerPackages={customerPackages} setSales={writers.sales} setItems={writers.items} store={store} notify={notify} log={addLog} role={role} perms={perms} guardOnline={guardOnline} />),
     finance: () => (tabEnabled("finance") ? guard("finance.view", <Finance sales={sales} expenses={expenses} />) : dashboard),
     stats: () => guard("stats.view", <Stats sales={sales} expenses={expenses} items={items} customers={customers} appointments={appointments} />),
     udhari: () => guard("udhari.manage", <Udhari sales={sales} setSales={writers.sales} notify={notify} log={addLog} />),
@@ -1604,7 +1630,7 @@ function StoreManager({ user, role, onLogout }) {
     vendorbills: () => guard("vendorBills.manage", <VendorBills bills={bills} setBills={writers.bills} setDailyBills={writers.dailyBills} online={online} notify={notify} log={addLog} />),
     logs: () => guard("logs.view", <Logs logs={logs} setLogs={writers.logs} notify={notify} />),
     changelog: () => <Changelog />,
-    settings: () => guard("settings.manage", <StoreConfig config={config} setConfig={writers.config} notify={notify} log={addLog} user={user} role={role} />),
+    settings: () => guard("settings.manage", <StoreConfig config={config} setConfig={writers.config} notify={notify} log={addLog} user={user} role={role} perms={perms} />),
     admin: () => guard("settings.manage", <Admin setItems={writers.items} setSales={writers.sales} setExpenses={writers.expenses} setLogs={writers.logs} sales={sales} customers={customers} setCustomers={writers.customers} customerPackages={customerPackages} setCustomerPackages={writers.customerPackages} config={config} user={user} notify={notify} log={addLog} />),
   };
   const view = (VIEWS[tab] || VIEWS.dashboard)();
@@ -1643,7 +1669,7 @@ function StoreManager({ user, role, onLogout }) {
       </span>
       <br />
       {user?.email ? <>Signed in as {user.email} · {ROLE_LABELS[role]}.<br /></> : null}
-      {can(role, "backup.use") ? "Back up regularly." : null}
+      {allow("backup.use") ? "Back up regularly." : null}
     </>
   );
 
@@ -1699,10 +1725,10 @@ function StoreManager({ user, role, onLogout }) {
         ))}
         {/* Backup/Restore is owner-only: a restore rewrites the whole tree, and an export
             hands the entire salon's books to whoever is holding the phone. */}
-        {can(role, "backup.use") && backupBlock({ first: true })}
+        {allow("backup.use") && backupBlock({ first: true })}
         {/* Pushes the footer down when the Backup block above (which normally carries the
             margin-top:auto) is hidden for this role. */}
-        {accountBlock({ pushDown: !can(role, "backup.use") })}
+        {accountBlock({ pushDown: !allow("backup.use") })}
         <div className="navfoot" style={{ fontSize: 11, color: "#6E8A7C", padding: "6px 14px 8px" }}>{statusFoot}</div>
       </nav>
       {/* Scrim behind the expanded tablet rail: it overlays the page, so a tap anywhere else
@@ -1774,7 +1800,7 @@ function StoreManager({ user, role, onLogout }) {
             {sheetTabs.map(([k, ic, label]) => (
               <NavButton key={k} icon={ic} label={label} active={tab === k} badge={tabBadge(k)} onClick={() => goTab(k)} />
             ))}
-            {can(role, "backup.use") && backupBlock({ first: false })}
+            {allow("backup.use") && backupBlock({ first: false })}
             {accountBlock({ pushDown: false })}
             <div style={{ fontSize: 11, color: "var(--text-mid, #6E8A7C)", padding: "10px 14px 4px" }}>{statusFoot}</div>
           </div>
@@ -2373,7 +2399,7 @@ function CustomerPicker({ customers, value, onPick, onCreate, notify }) {
 // ---------- Billing / POS ----------
 // Note: Billing reads customerPackages but never writes them. Drawing a session down IS
 // recording packageRedemptions on the bill; the shell derives usesLeft from that.
-function Billing({ items, sales, services, staff, customers, customerPackages, config, setItems, setSales, setCustomers, store = STORE, notify, log, role, user, guardOnline = () => true, prefill, onPrefillUsed, onBilled }) {
+function Billing({ items, sales, services, staff, customers, customerPackages, config, setItems, setSales, setCustomers, store = STORE, notify, log, role, perms, user, guardOnline = () => true, prefill, onPrefillUsed, onBilled }) {
   const [q, setQ] = useState("");
   // Phone-only running-total bar. The receipt pane is a screen further down once the two panes
   // stack, and `receiptVisible` is what stops the bar duplicating a total that is already on
@@ -2862,7 +2888,7 @@ function Billing({ items, sales, services, staff, customers, customerPackages, c
         </button>
       )}
       <Header title="Billing" sub={mode === "service" ? "Tap a service to add it to the bill" : "Tap a product to add it to the bill"}>
-        {can(role, "billing.backdate") ? (
+        {can(role, "billing.backdate", perms) ? (
           <label style={{ fontSize: 12, color: saleDate === todayStr() ? "var(--text-mid, #6B7E74)" : "#C44536", fontWeight: 600 }}>
             Bill date{" "}
             <input type="date" className="input" style={{ width: "auto", marginLeft: 4 }} value={saleDate} max={todayStr()} onChange={(e) => setSaleDate(e.target.value || todayStr())} />
@@ -4297,7 +4323,7 @@ const PAY_COLORS = { UPI: "#2A6FB0", Cash: "#1b5e43", Udhari: "#C44536" };
 // guardOnline is needed for one thing only: sending a bill uploads its image, and an upload
 // with no connection must raise the same "not saved — you're offline" modal every other write
 // does, rather than failing somewhere inside Firebase Storage.
-function SalesHistory({ sales, items, staff, services = [], customerPackages = [], setSales, setItems, store = STORE, notify, log, role, guardOnline = () => true }) {
+function SalesHistory({ sales, items, staff, services = [], customerPackages = [], setSales, setItems, store = STORE, notify, log, role, perms, guardOnline = () => true }) {
   const [open, setOpen] = useState(null);
   const [openDates, setOpenDates] = useState(() => new Set()); // expanded past dates (today is always open)
   const [from, setFrom] = useState("");
@@ -4344,7 +4370,7 @@ function SalesHistory({ sales, items, staff, services = [], customerPackages = [
   const deleteSale = (s) => {
     // Belt and braces: the nav never offers this view's delete to a worker, and the database
     // rules reject the write anyway — but the guard belongs next to the action too.
-    if (!can(role, "sales.delete")) return notify("⚠ Only the owner can delete a bill.");
+    if (!can(role, "sales.delete", perms)) return notify("⚠ Only the owner can delete a bill.");
     // Spell out everything that reverses. Points and package sessions come back on their own
     // (both are derived from the bills), but the person deleting it should know that up front
     // rather than discover it at the counter next week.
@@ -4700,9 +4726,9 @@ function SalesHistory({ sales, items, staff, services = [], customerPackages = [
                       extras={receiptExtras(s, { customerPackages, services, sales })}
                       notify={notify} guardOnline={guardOnline}
                     />
-                    {can(role, "sales.edit") && <button className="btn small ghost" onClick={() => openEdit(s)}>✎ Edit bill</button>}
-                    {can(role, "sales.edit") && <button className="btn small ghost" onClick={() => openSplit(s)}>✂ Split</button>}
-                    {can(role, "sales.delete") && <button className="btn small danger" onClick={() => deleteSale(s)}>🗑 Delete</button>}
+                    {can(role, "sales.edit", perms) && <button className="btn small ghost" onClick={() => openEdit(s)}>✎ Edit bill</button>}
+                    {can(role, "sales.edit", perms) && <button className="btn small ghost" onClick={() => openSplit(s)}>✂ Split</button>}
+                    {can(role, "sales.delete", perms) && <button className="btn small danger" onClick={() => deleteSale(s)}>🗑 Delete</button>}
                   </div>
                 </div>
               )}
@@ -6558,7 +6584,7 @@ function Expenses({ expenses, setExpenses, notify, log }) {
 // hard-coded now live in `config` (synced at shop/config across every device). This screen edits
 // a local draft and commits it via setConfig on Save; effectiveStore() layers it over the
 // built-in defaults everywhere the identity is shown (sidebar, login card, printed receipt).
-function StoreConfig({ config, setConfig, notify, log, user, role }) {
+function StoreConfig({ config, setConfig, notify, log, user, role, perms }) {
   const toDraft = (c = {}) => ({
     name: c.name || "", tagline: c.tagline || "", address: c.address || "",
     phone: c.phone || "", pcIp: c.pcIp || "", logo: c.logo || "", paymentQr: c.paymentQr || "",
@@ -6819,8 +6845,9 @@ function StoreConfig({ config, setConfig, notify, log, user, role }) {
         </div>
       </section>
 
-      {can(role, "loyalty.configure") && <LoyaltyConfig config={config} setConfig={setConfig} notify={notify} log={log} />}
-      {can(role, "users.manage") && <Users user={user} notify={notify} log={log} />}
+      {can(role, "loyalty.configure", perms) && <LoyaltyConfig config={config} setConfig={setConfig} notify={notify} log={log} />}
+      {can(role, "users.manage", perms) && <Users user={user} notify={notify} log={log} />}
+      {can(role, "users.manage", perms) && <RoleFeatures config={config} setConfig={setConfig} notify={notify} log={log} />}
     </div>
   );
 }
@@ -6928,7 +6955,7 @@ const PX_PER_MIN = 1.5; // 15-min slot = 22.5px — thumb-sized on a phone, a fu
 
 function Appointments({
   appointments, setAppointments, customers, setCustomers, services, staff, config,
-  notify, log, role, onCompleteToBill,
+  notify, log, role, perms, onCompleteToBill,
 }) {
   const [date, setDate] = useState(todayStr());
   const [editing, setEditing] = useState(null); // an appointment draft, or null
@@ -7123,13 +7150,13 @@ function Appointments({
               {slots.map((t) => (
                 <button
                   key={t}
-                  onClick={() => can(role, "appointments.edit") && openNew(s.id, t)}
+                  onClick={() => can(role, "appointments.edit", perms) && openNew(s.id, t)}
                   aria-label={`Book ${s.name} at ${toClock(t)}`}
                   style={{
                     position: "absolute", top: (t - hours.openMin) * PX_PER_MIN, left: 0, right: 0,
                     height: SLOT_MIN * PX_PER_MIN, border: "none", background: "none",
                     borderTop: t % 60 === 0 ? "1px solid #E2EAE3" : "1px dotted #F0F4F1",
-                    cursor: can(role, "appointments.edit") ? "pointer" : "default", padding: 0,
+                    cursor: can(role, "appointments.edit", perms) ? "pointer" : "default", padding: 0,
                   }}
                 />
               ))}
@@ -7185,7 +7212,7 @@ function Appointments({
         <AppointmentModal
           draft={editing} setDraft={setEditing} err={err}
           services={services} staff={staff} customers={customers} setCustomers={setCustomers}
-          appointments={appointments} notify={notify} role={role}
+          appointments={appointments} notify={notify} role={role} perms={perms}
           onSave={save} onClose={close} onStatus={setStatus} onDelete={remove}
           onCompleteToBill={onCompleteToBill}
         />
@@ -7199,7 +7226,7 @@ function Appointments({
 // more clarity.
 function AppointmentModal({
   draft, setDraft, err, services, staff, customers, setCustomers, appointments,
-  notify, role, onSave, onClose, onStatus, onDelete, onCompleteToBill,
+  notify, role, perms, onSave, onClose, onStatus, onDelete, onCompleteToBill,
 }) {
   const isNew = !draft.id;
   const isBlock = draft.status === "blocked";
@@ -7307,7 +7334,7 @@ function AppointmentModal({
 
       <div style={{ display: "flex", gap: 8, justifyContent: "space-between", marginTop: 6, flexWrap: "wrap" }}>
         <div>
-          {!isNew && can(role, "appointments.edit") && (
+          {!isNew && can(role, "appointments.edit", perms) && (
             <button className="btn ghost" style={{ color: "#C44536" }} onClick={() => onDelete(draft)}>Delete</button>
           )}
         </div>
@@ -7315,14 +7342,14 @@ function AppointmentModal({
           <button className="btn" onClick={onClose}>Close</button>
           {/* The whole point of the diary: turn a finished appointment into a bill, pre-filled,
               without re-typing the customer, the services or who did them. */}
-          {!isNew && !isBlock && draft.status !== "cancelled" && can(role, "billing.use") && (
+          {!isNew && !isBlock && draft.status !== "cancelled" && can(role, "billing.use", perms) && (
             draft.billId ? (
               <span style={{ alignSelf: "center", fontSize: 12, color: "var(--brand)", fontWeight: 600 }}>✓ Billed</span>
             ) : (
               <button className="btn primary" onClick={() => onCompleteToBill(draft)}>Complete → Bill</button>
             )
           )}
-          {can(role, "appointments.edit") && <button className="btn primary" onClick={onSave}>{isNew ? "Book" : "Save"}</button>}
+          {can(role, "appointments.edit", perms) && <button className="btn primary" onClick={onSave}>{isNew ? "Book" : "Save"}</button>}
         </div>
       </div>
     </Modal>
@@ -7336,7 +7363,10 @@ function AppointmentModal({
 // Sending is a WhatsApp deep link that a human taps. There is no API and no automation here:
 // the salon decides, message by message. That is a deliberate constraint — it keeps them on
 // the right side of both WhatsApp's terms and their customers' patience.
-function Reminders({ customers, setCustomers, sales, services, customerPackages, messageTemplates, setMessageTemplates, store, notify, log }) {
+// `reminders.use` (sending) is something an owner can hand to a worker; editing the templates
+// is not — shop/messageTemplates is owner-write-only, so a worker's save would be bounced by
+// the rules. Hence the separate reminders.templates check on the ✎ Templates button.
+function Reminders({ customers, setCustomers, sales, services, customerPackages, messageTemplates, setMessageTemplates, store, notify, log, role, perms }) {
   const today = todayStr();
   const [kindFilter, setKindFilter] = useState("all");
   const [hideSent, setHideSent] = useState(true);
@@ -7433,7 +7463,9 @@ function Reminders({ customers, setCustomers, sales, services, customerPackages,
     <div>
       <Header title="Reminders" sub={`${queue.length} customer(s) worth a message today`}>
         <div style={{ display: "flex", gap: 8 }}>
-          <button className="btn" onClick={() => setEditingTemplates(true)}>✎ Templates</button>
+          {can(role, "reminders.templates", perms) && (
+            <button className="btn" onClick={() => setEditingTemplates(true)}>✎ Templates</button>
+          )}
           {visible.length > 0 && <button className="btn primary big" onClick={sendAll}>Open all {visible.length} chats</button>}
         </div>
       </Header>
@@ -9078,6 +9110,10 @@ function Users({ user, notify, log }) {
             <b style={{ color: "#334" }}>{ROLE_LABELS[r]}</b> — {ROLE_DESCRIPTIONS[r]}
           </div>
         ))}
+        <div style={{ marginTop: 6 }}>
+          That's the starting point. Change what a Biller or an Inventory user can reach under
+          <b> Feature access</b>, just below.
+        </div>
       </div>
 
       {adding && (
@@ -9156,6 +9192,206 @@ function Users({ user, notify, log }) {
         Deactivating keeps the person's history intact and blocks them at the database, not just in
         the app. Removing an account entirely is a Firebase console job — deactivating is almost
         always what you want.
+      </div>
+    </section>
+  );
+}
+
+// ---------- Settings → Feature access (owner only) ----------
+// Which features each WORKER ROLE gets, on top of the built-in defaults. The owner's choices
+// live at config.permissions and sync like every other setting, so switching Billing off for
+// the Billers reaches their tablet without a reload.
+//
+// What this panel can and cannot offer is decided by roles.js GRANTABLE, not by taste:
+// database.rules.json hard-codes `role === 'owner'` on the sensitive nodes, so a toggle for
+// (say) Expenses would open a screen whose every read comes back permission-denied. Those
+// features are listed under "Always the owner's" below WITH the reason, so the panel explains
+// its own gaps rather than just looking short. See roles.js for the full argument.
+//
+// The owner is deliberately absent from the matrix: an owner is never restricted, which is what
+// stops a setting from locking the last owner out of their own shop.
+const ALL_TABS = [...TOP_TABS, ...OTHER_TABS];
+
+// A feature whose only screen is switched off in FEATURES has nothing to grant right now —
+// show no row rather than a toggle that changes nothing. Actions with no tab of their own
+// (inventory.edit lives INSIDE the Inventory screen) are always live.
+const actionLive = (action) => {
+  const homes = ALL_TABS.filter(([, , , a]) => a === action);
+  return homes.length === 0 || homes.some(([k]) => tabEnabled(k));
+};
+
+// Drop any switch that merely restates the default, so config.permissions stays a record of
+// what the owner actually CHANGED. Same reason an icon is never baked into a service: a shop
+// that left a feature alone keeps following the default if a later version improves it.
+// Iterating GRANTABLE rather than the object's own keys puts the result in a CANONICAL key
+// order. The panel's dirty check compares JSON, and a map built by ticking boxes carries its
+// keys in click order while one loaded from the cloud carries them in envelope order — same
+// content, different string. Ordering here makes that comparison mean what it says instead of
+// happening to work because the draft is re-seeded from the sanitised value.
+const pruneToChanges = (map) => {
+  const out = {};
+  for (const role of CONFIGURABLE_ROLES) {
+    const defaults = new Set(roleDefaults(role));
+    const kept = {};
+    for (const action of GRANTABLE[role]) {
+      const on = map?.[role]?.[action];
+      if (typeof on === "boolean" && on !== defaults.has(action)) kept[action] = on;
+    }
+    if (Object.keys(kept).length) out[role] = kept;
+  }
+  return out;
+};
+
+function RoleFeatures({ config, setConfig, notify, log }) {
+  const saved = useMemo(() => sanitizePermissions(config.permissions), [config.permissions]);
+  const savedJson = useMemo(() => JSON.stringify(pruneToChanges(saved)), [saved]);
+  const [draft, setDraft] = useState(saved);
+  // Re-seed when the stored value changes — our own save echoing back, or another device.
+  useEffect(() => { setDraft(saved); }, [savedJson]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const changes = useMemo(() => pruneToChanges(draft), [draft]);
+  const dirty = JSON.stringify(changes) !== savedJson;
+
+  const isOn = (role, action) => can(role, action, draft);
+  const grantable = (role, action) => GRANTABLE[role].includes(action);
+  const changed = (role, action) => Object.prototype.hasOwnProperty.call(changes[role] || {}, action);
+
+  const toggle = (role, action) => setDraft((d) => ({
+    ...d,
+    [role]: { ...(d[role] || {}), [action]: !can(role, action, d) },
+  }));
+
+  const resetRole = (role) => setDraft((d) => { const next = { ...d }; delete next[role]; return next; });
+
+  // The rows worth showing: every grantable action whose screen is actually in the app.
+  const groups = useMemo(
+    () => FEATURE_GROUPS
+      .map((g) => ({ ...g, actions: g.actions.filter((a) => actionLive(a) && CONFIGURABLE_ROLES.some((r) => grantable(r, a))) }))
+      .filter((g) => g.actions.length),
+    []
+  );
+
+  // What each role would actually see once saved. Spelling the consequence out beats making the
+  // owner tick sixteen boxes and then go and sign in as a biller to find out what they did.
+  const preview = (role) => ALL_TABS.filter((t) => tabAllowed(role, draft, t)).map(([, , label]) => label);
+
+  const save = () => {
+    setConfig((c) => ({ ...c, permissions: changes }));
+    const summary = CONFIGURABLE_ROLES
+      .map((r) => `${ROLE_LABELS[r]}: ${Object.keys(changes[r] || {}).length} change(s) from default`)
+      .join(", ");
+    log?.("settings", `Updated worker feature access — ${summary}`);
+    notify("✓ Feature access saved");
+  };
+
+  return (
+    <section style={{ ...S.panel, marginTop: 16 }}>
+      <div style={{ ...S.panelHead, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+        <span>Feature access</span>
+        <button className="btn primary" onClick={save} disabled={!dirty}>
+          {dirty ? "Save feature access" : "Saved"}
+        </button>
+      </div>
+
+      <div style={{ fontSize: 12, color: "var(--text-mid, #6B7E74)", lineHeight: 1.6, marginBottom: 12 }}>
+        Choose exactly what a <b>Biller</b> and an <b>Inventory</b> user can reach. This applies to
+        everyone with that role, on every device, as soon as you save. An <b>Owner</b> always has
+        everything, so there is nothing to set here for them.
+      </div>
+
+      <div style={{ overflowX: "auto" }}>
+        <table className="tbl" style={{ width: "100%", minWidth: 420 }}>
+          <thead>
+            <tr>
+              <th>Feature</th>
+              {CONFIGURABLE_ROLES.map((r) => (
+                <th key={r} style={{ textAlign: "center", width: 110 }}>{ROLE_LABELS[r]}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {groups.map((g) => (
+              <Fragment key={g.title}>
+                <tr>
+                  <td colSpan={1 + CONFIGURABLE_ROLES.length} style={{ fontSize: 11.5, fontWeight: 800, letterSpacing: ".04em", textTransform: "uppercase", color: "var(--text-mid, #8A9C90)", background: "var(--surface-2, #F8FBF9)" }}>
+                    {g.title}
+                  </td>
+                </tr>
+                {g.actions.map((action) => {
+                  const meta = ACTION_LABELS[action] || { label: action, hint: "" };
+                  return (
+                    <tr key={action}>
+                      <td>
+                        <div style={{ fontWeight: 600, fontSize: 13 }}>{meta.label}</div>
+                        <div style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)" }}>{meta.hint}</div>
+                      </td>
+                      {CONFIGURABLE_ROLES.map((r) => (
+                        <td key={r} style={{ textAlign: "center" }}>
+                          {grantable(r, action) ? (
+                            <label
+                              style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 5, minHeight: 40, minWidth: 44, cursor: "pointer" }}
+                              title={`${meta.label} — ${ROLE_LABELS[r]}`}
+                            >
+                              <input
+                                type="checkbox" checked={isOn(r, action)} onChange={() => toggle(r, action)}
+                                aria-label={`${meta.label} for ${ROLE_LABELS[r]}`}
+                                style={{ width: 18, height: 18, cursor: "pointer", accentColor: "var(--accent, var(--brand))" }}
+                              />
+                              {/* A quiet dot, not a colour change: "different from the built-in
+                                  default" is useful to see but is not a warning. */}
+                              <span style={{ width: 6, height: 6, borderRadius: "50%", background: changed(r, action) ? "var(--accent, var(--brand))" : "transparent" }} />
+                            </label>
+                          ) : (
+                            <span style={{ color: "var(--text-mid, #A8B8AE)", fontSize: 13 }} title="Only an Inventory user may change stock — the database enforces that, so it can't be given to a Biller.">—</span>
+                          )}
+                        </td>
+                      ))}
+                    </tr>
+                  );
+                })}
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 14 }}>
+        {CONFIGURABLE_ROLES.map((r) => {
+          const seen = preview(r);
+          const n = Object.keys(changes[r] || {}).length;
+          return (
+            <div key={r} style={{ border: "1px solid var(--border, #E2EAE3)", borderRadius: 10, padding: 12, background: "var(--surface-2, #F8FBF9)" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
+                <b style={{ fontSize: 13, color: "var(--text-hi, #25342C)" }}>A {ROLE_LABELS[r]} will see</b>
+                {n > 0 && (
+                  <button className="btn ghost" style={{ fontSize: 11.5 }} onClick={() => resetRole(r)}>Reset to default</button>
+                )}
+              </div>
+              <div style={{ fontSize: 12, color: "var(--text-mid, #6B7E74)", lineHeight: 1.6 }}>
+                {seen.join(" · ")}
+              </div>
+              <div style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)", marginTop: 6 }}>
+                {n === 0 ? "Built-in default." : `${n} change${n === 1 ? "" : "s"} from the default.`}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ marginTop: 14, border: "1px solid var(--border, #E2EAE3)", borderRadius: 10, padding: 12 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--text-hi, #25342C)", marginBottom: 6 }}>
+          Always the owner's — these can't be switched on for anyone
+        </div>
+        <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11.5, color: "var(--text-mid, #6B7E74)", lineHeight: 1.7 }}>
+          {LOCKED_FEATURES.map((f) => (
+            <li key={f.what}><b>{f.what}</b> — {f.why}.</li>
+          ))}
+        </ul>
+        <div style={{ fontSize: 11.5, color: "var(--text-mid, #8A9C90)", marginTop: 8, lineHeight: 1.6 }}>
+          These aren't hidden by the app alone — the salon's database refuses them for anyone who
+          isn't an owner. A switch here would look like it worked and then fail at the counter, so
+          there isn't one.
+        </div>
       </div>
     </section>
   );

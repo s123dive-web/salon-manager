@@ -66,6 +66,34 @@ spec wipes the database in `beforeEach`.
 Failures from breaking either look like flaky rules, not like a config problem — which is
 what makes them expensive.
 
+### Feature access (the owner's per-role switches)
+
+Settings → Users & roles → **Feature access** lets the owner turn individual features on and off
+for the `biller` and `inventory` roles. The choices live at `config.permissions` (a sparse map of
+*what changed from the default*) and arrive as `can()`'s **third argument**.
+
+**`GRANTABLE` in `roles.js` is derived from `database.rules.json`, not from taste.** The rules
+hard-code `role === 'owner'` on the sensitive nodes, so a switch for anything outside that
+envelope would open a screen whose every read comes back permission-denied — a toggle that looks
+like it worked and fails at the counter. `can()` **intersects overrides with the envelope**, so
+even a hand-edited `permissions` blob can't grant past the rules, and the owner is answered
+before overrides are read at all. Adding a switch = check the rule in `database.rules.json`
+first, then add the action to `GRANTABLE[role]`.
+
+Three things that will bite:
+
+1. **`can(role, action)` with no third argument silently ignores the owner's switches.** Inside
+   `StoreManager` use `allow(action)`; elsewhere the component is handed `perms` next to `role`
+   and calls `can(role, action, perms)`. A stray two-arg call is how a hidden tab ends up with a
+   reachable view behind it — `permissions.integration.test.jsx` mounts the real app and checks
+   the nav and the view guard *agree*.
+2. **`sync.js` `readableSlices(role)` deliberately takes no overrides.** It only gates the money
+   slices, and no money action is grantable — a test pins that. Put a money action in `GRANTABLE`
+   and the subscription list quietly stops matching the permission matrix.
+3. **A grantable action must not need an owner-only WRITE.** This is why `reminders.use`
+   (sending) and `reminders.templates` (editing the templates, which writes an owner-only node)
+   are separate actions, and why `SEEDERS.messageTemplates` gates on the latter.
+
 ### Known rule-vs-README divergences
 
 Both are asserted as-is by the suite, so it documents real behaviour. Don't "fix" the tests
